@@ -48,7 +48,7 @@ class PDFIngestor(BaseIngestor):
             )
             return {"success": False, "records": 0, "message": str(e)}
 
-        file_name = Path(file_path).name
+        file_name = Path(kwargs.get("original_filename") or file_path).name
         all_chunks = []
         all_metadatas = []
         all_ids = []

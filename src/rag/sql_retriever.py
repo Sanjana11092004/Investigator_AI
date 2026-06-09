@@ -128,10 +128,16 @@ class SQLRetriever:
         if grade:
             q = q.filter(AdverseEvent.aegrade >= grade)
 
-        # Keyword search
+        # Keyword search — match the human-readable term (aeterm, e.g.
+        # "Hepatotoxicity") as well as the coded value (aedecod, "HEPATOTOX"),
+        # so a query like "liver toxicity" surfaces the hepatotoxicity events.
         keywords = self._extract_medical_keywords(query_text)
         if keywords and not (study_id or patient_id or serious_only):
-            q = q.filter(or_(*[AdverseEvent.aedecod.ilike(f"%{kw}%") for kw in keywords]))
+            conds = []
+            for kw in keywords:
+                conds.append(AdverseEvent.aedecod.ilike(f"%{kw}%"))
+                conds.append(AdverseEvent.aeterm.ilike(f"%{kw}%"))
+            q = q.filter(or_(*conds))
 
         aes = q.limit(settings.sql_max_rows).all()
         if not aes:

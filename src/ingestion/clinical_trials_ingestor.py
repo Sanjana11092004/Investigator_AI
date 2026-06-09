@@ -65,6 +65,7 @@ class ClinicalTrialsIngestor(BaseIngestor):
         
         Also returns text content for vector store indexing.
         """
+        display_name = Path(kwargs.get("original_filename") or file_path).name
         file_hash = compute_file_hash(file_path)
 
         if is_already_ingested(self.db, file_hash):
@@ -76,7 +77,7 @@ class ClinicalTrialsIngestor(BaseIngestor):
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON in {file_path}: {e}")
             register_document(
-                self.db, Path(file_path).name, file_path, file_hash,
+                self.db, display_name, file_path, file_hash,
                 "clinical_trials_json", os.path.getsize(file_path),
                 status="failed", error_message=str(e)
             )
@@ -117,7 +118,7 @@ class ClinicalTrialsIngestor(BaseIngestor):
 
         register_document(
             self.db,
-            Path(file_path).name,
+            display_name,
             file_path,
             file_hash,
             "clinical_trials_json",
@@ -214,8 +215,16 @@ class ClinicalTrialsIngestor(BaseIngestor):
                  _safe_get(sponsor_module, "leadSponsor", "name")
                  or data.get("LeadSponsorName", "")
             ),
-            start_date=_parse_date(start_date_str),
-            completion_date=_parse_date(completion_date_str),
+            overall_status=(
+                status_module.get("overallStatus")
+                or data.get("OverallStatus")
+                or data.get("status", "")
+            ),
+            conditions=condition_str,
+            # start_date / completion_date columns are String(50) — store raw
+            # string (formats vary: "YYYY", "YYYY-MM", "YYYY-MM-DD").
+            start_date=start_date_str,
+            completion_date=completion_date_str,
             enrollment_count=int(
                 _safe_get(design_module, "enrollmentInfo", "count")
                 or data.get("EnrollmentCount")

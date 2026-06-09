@@ -139,6 +139,19 @@ class TestIngestEndpoints:
         assert resp.json()["success"] is False
 
 
+class TestStatsEndpoint:
+
+    def test_stats_returns_all_counts(self, client):
+        resp = client.get("/stats")
+        assert resp.status_code == 200
+        data = resp.json()
+        for key in ["patients", "adverse_events", "lab_results", "medications",
+                    "medical_history", "studies", "documents", "sessions"]:
+            assert key in data
+            assert isinstance(data[key], int)
+            assert data[key] >= 0
+
+
 class TestAuditEndpoints:
 
     def test_get_audit_trail_returns_list(self, client):

@@ -83,6 +83,11 @@ class EntityExtractor:
                 [e.strip() for e in entities[key] if e.strip() and e.lower() not in self.STOPWORDS]
             ))
 
+        # A subject/patient ID must never also be reported as a study — otherwise
+        # it poisons the session's active-study context on follow-up queries.
+        patient_set = set(entities["patients"])
+        entities["studies"] = [s for s in entities["studies"] if s not in patient_set]
+
         return entities
 
     def _rule_based_extract(self, text: str, entities: Dict) -> Dict:
@@ -102,11 +107,14 @@ class EntityExtractor:
             matches = re.findall(pat, text, re.IGNORECASE)
             entities["patients"].extend(matches)
 
-        # Study IDs: NCT numbers, study codes
+        # Study IDs: NCT numbers, study codes.
+        # The negative lookahead keeps patient/subject IDs (SUBJ-0001, PAT-001)
+        # from being misread as study codes, and the "Study X" capture requires
+        # a digit so plain words ("Study day") are never captured.
         study_patterns = [
-            r'\bNCT\d{8}\b',                      # ClinicalTrials NCT ID
-            r'\b[A-Z]{2,6}-\d{3,5}\b',            # e.g. ABC-101
-            r'\bStudy\s+([A-Z0-9\-]+)\b',         # "Study ABC-101"
+            r'\bNCT\d{8}\b',                                   # ClinicalTrials NCT ID
+            r'\b(?!SUBJ|PAT|PT|API)[A-Z]{2,6}-\d{3,5}\b',     # study codes e.g. ABC-101
+            r'\bStudy\s+([A-Z0-9]{2,}-?\d[A-Z0-9\-]*)\b',     # "Study ABC-101" (must have a digit)
         ]
         for pat in study_patterns:
             matches = re.findall(pat, text, re.IGNORECASE)
