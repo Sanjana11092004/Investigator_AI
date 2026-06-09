@@ -173,10 +173,23 @@ class LongTermMemory:
         if entities.get("drugs"):
             extra["recent_drugs"] = entities["drugs"][:3]
 
+        # Only pin an active patient when the turn is focused on a SINGLE subject.
+        # A list query (e.g. "show all serious AEs" → 24 patients) must not pin one,
+        # or the next follow-up gets wrongly filtered to just that patient.
+        active_patient = patients[0] if len(patients) == 1 else None
+
+        # Only treat the candidate as a study if it actually looks like a study id
+        # (contains a digit) and is not really a subject/patient identifier.
+        active_study = None
+        if studies:
+            candidate = studies[0]
+            if any(ch.isdigit() for ch in candidate) and candidate not in patients:
+                active_study = candidate
+
         self.update_context(
             session_id,
-            study_id=studies[0] if studies else None,
-            patient_id=patients[0] if patients else None,
+            study_id=active_study,
+            patient_id=active_patient,
             extra_context=extra if extra else None,
         )
 

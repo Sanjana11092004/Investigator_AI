@@ -78,8 +78,9 @@ class RAGPipeline:
         # 3. Format evidence for LLM
         evidence_text = self._format_evidence(all_results)
 
-        # 4. Format conversation history (last N turns)
-        history_text = self._format_history(conversation_history[-10:])
+        # 4. Format conversation history (last 3 turns keeps follow-up context
+        #    while keeping the request small enough to avoid per-minute throttling)
+        history_text = self._format_history(conversation_history[-6:])
 
         # 5. Build context summary
         context_summary = self._build_context_summary(session_context)
@@ -126,23 +127,38 @@ class RAGPipeline:
             "latency_ms": latency,
         }
 
+    # Keep the evidence block small enough to fit comfortably inside the LLM
+    # request budget (also conserves the daily token quota). Free-tier models
+    # reject oversized requests, so we cap per-source and total length.
+    MAX_SOURCE_CHARS = 3000
+    MAX_EVIDENCE_CHARS = 3500
+
     def _format_evidence(self, results: List[Dict[str, Any]]) -> str:
-        """Format retrieved results into a readable evidence block."""
+        """Format retrieved results into a readable (size-bounded) evidence block."""
         if not results:
             return ""
 
         parts = []
+        total = 0
         for i, r in enumerate(results, 1):
             source_type = r.get("type", "unknown").upper()
             source = r.get("source", "unknown")
             content = r.get("content", "")
+            if len(content) > self.MAX_SOURCE_CHARS:
+                content = content[: self.MAX_SOURCE_CHARS] + "\n… (additional rows truncated)"
 
-            if r.get("page"):
-                parts.append(f"[{source_type} Source {i} — {source}, page {r['page']}]\n{content}")
-            else:
-                parts.append(f"[{source_type} Source {i} — {source}]\n{content}")
+            header = (f"[{source_type} Source {i} — {source}, page {r['page']}]"
+                      if r.get("page") else f"[{source_type} Source {i} — {source}]")
+            block = f"{header}\n{content}"
+            parts.append(block)
+            total += len(block)
+            if total >= self.MAX_EVIDENCE_CHARS:
+                break
 
-        return "\n\n---\n\n".join(parts)
+        text = "\n\n---\n\n".join(parts)
+        if len(text) > self.MAX_EVIDENCE_CHARS:
+            text = text[: self.MAX_EVIDENCE_CHARS] + "\n… (evidence truncated to fit context)"
+        return text
 
     def _format_history(self, history: List[Dict[str, str]]) -> str:
         """Format conversation history for injection into prompt."""
@@ -151,7 +167,7 @@ class RAGPipeline:
         lines = []
         for msg in history:
             role = "User" if msg["role"] == "user" else "Assistant"
-            lines.append(f"{role}: {msg['content'][:500]}")  # truncate long messages
+            lines.append(f"{role}: {msg['content'][:300]}")  # truncate long messages
         return "\n".join(lines)
 
     def _build_context_summary(self, context: Dict[str, Any]) -> str:

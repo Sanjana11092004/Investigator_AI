@@ -76,6 +76,10 @@ class QueryClassifier:
         except (json.JSONDecodeError, Exception) as e:
             logger.warning(f"Query classifier failed, using rule-based fallback: {e}")
             result = self._rule_based_classify(query)
+            # When the LLM output was unusable we can't trust the strategy, so
+            # default to hybrid — run BOTH structured + semantic retrieval to
+            # maximise the chance of surfacing relevant evidence.
+            result["strategy"] = "hybrid"
 
         # ── 4. Post-process: ensure sql_entities is in the right priority order ──
         result["sql_entities"] = self._reorder_entities(

@@ -18,3 +18,12 @@ venv/
 
 # OS
 .DS_Store
+
+# Database dumps (too large for git; share separately)
+*.sql
+*.sql.gz
+
+# Local tunnel/sharing helpers (machine-specific)
+cloudflared.exe
+share.ps1
+stop_share.ps1

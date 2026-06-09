@@ -66,12 +66,9 @@ class SDTMIngestor(BaseIngestor):
         return file_path.endswith(".csv") and name in self.DOMAIN_MAP
 
     def ingest(self, file_path: str, **kwargs) -> Dict[str, Any]:
-        domain = Path(
-            kwargs.get(
-                "original_filename",
-                file_path
-            )
-        ).stem.upper()
+        source_name = kwargs.get("original_filename") or file_path
+        domain = Path(source_name).stem.upper()
+        display_name = Path(source_name).name
         file_hash = compute_file_hash(file_path)
 
         if is_already_ingested(self.db, file_hash):
@@ -84,7 +81,7 @@ class SDTMIngestor(BaseIngestor):
         except Exception as e:
             logger.error(f"Failed to read CSV {file_path}: {e}")
             register_document(
-                self.db, Path(file_path).name, file_path, file_hash,
+                self.db, display_name, file_path, file_hash,
                 "sdtm", os.path.getsize(file_path), status="failed", error_message=str(e)
             )
             return {"success": False, "records": 0, "message": str(e)}
@@ -98,14 +95,14 @@ class SDTMIngestor(BaseIngestor):
             self.db.rollback()
             logger.error(f"SDTM {domain} ingest failed: {e}")
             register_document(
-                self.db, Path(file_path).name, file_path, file_hash,
+                self.db, display_name, file_path, file_hash,
                 "sdtm", os.path.getsize(file_path), status="failed", error_message=str(e)
             )
             return {"success": False, "records": 0, "message": str(e)}
 
         register_document(
             self.db,
-            Path(file_path).name,
+            display_name,
             file_path,
             file_hash,
             "sdtm",
