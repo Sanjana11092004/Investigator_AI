@@ -34,7 +34,7 @@ RAG_PROMPT = """Based on the following retrieved evidence, answer the user's que
 
 Instructions:
 - Answer directly and clearly.
-- Reference specific evidence (e.g., "According to the AE data for patient SUBJ001...")
+- Reference specific evidence (e.g., "According to the AE data for patient SUBJ-0001...")
 - If the question references a previous finding, use that context.
 - Format any lists or tables in a readable way.
 - End with: "Sources: [list the document/table names used]"
@@ -62,36 +62,77 @@ Return a JSON object with these keys (empty list if none found):
 Return ONLY the JSON object, no other text.
 """
 
-QUERY_CLASSIFIER_PROMPT = """Classify this clinical research query.
+QUERY_CLASSIFIER_PROMPT = """You are a clinical data retrieval classifier. Classify the query below into the correct retrieval strategy and database tables.
+
+=== DATABASE TABLES ===
+- patients       : demographics (age, sex, race, BMI, smoking, diagnosis, study arm). Patient IDs follow the format SUBJ-0001, SUBJ-0002, etc.
+- adverse_events : AE terms, severity, grade, serious flag (Y/N), outcome, hospitalization
+- lab_results    : lab test values (ALT, AST, WBC, creatinine, HbA1c, etc.), normal/abnormal flag
+- medications    : concomitant medications, dose, route, indication
+- medical_history: prior/comorbid conditions, diagnoses
+- studies        : clinical trial metadata (NCT ID, phase, sponsor, enrollment)
+
+=== PRIORITY RULE ===
+Always prefer specific clinical tables over "studies".
+Use "studies" ONLY when the query explicitly asks about trial design, sponsor,
+enrollment numbers, NCT identifiers, or study phase.
+For all patient/AE/lab/medication/history questions, never include "studies" in sql_entities.
+
+=== STRATEGIES ===
+- "sql"    : structured data lookup (patient records, AE counts, labs, meds)
+- "vector" : semantic search in PDF narrative documents
+- "hybrid" : needs both structured data AND narrative context
+
+=== FEW-SHOT EXAMPLES ===
+
+Query: "Show SUBJ-0001 demographics"
+{{"strategy":"sql","sql_entities":["patients"],"filters":{{"patient_id":"SUBJ-0001"}},"search_terms":[]}}
+
+Query: "Show SUBJ-0042 demographics"
+{{"strategy":"sql","sql_entities":["patients"],"filters":{{"patient_id":"SUBJ-0042"}},"search_terms":[]}}
+
+Query: "Show SUBJ-0010 age and sex"
+{{"strategy":"sql","sql_entities":["patients"],"filters":{{"patient_id":"SUBJ-0010"}},"search_terms":[]}}
+
+Query: "List all patients above age 60"
+{{"strategy":"sql","sql_entities":["patients"],"filters":{{"age_filter":"> 60"}},"search_terms":[]}}
+
+Query: "Which patients had liver toxicity?"
+{{"strategy":"sql","sql_entities":["patients","adverse_events","lab_results"],"filters":{{}},"search_terms":["liver","toxicity"]}}
+
+Query: "Show all serious adverse events"
+{{"strategy":"sql","sql_entities":["adverse_events"],"filters":{{"serious_only":true}},"search_terms":[]}}
+
+Query: "What are the ALT values for SUBJ-0005?"
+{{"strategy":"sql","sql_entities":["lab_results"],"filters":{{"patient_id":"SUBJ-0005"}},"search_terms":["ALT"]}}
+
+Query: "Show abnormal lab results"
+{{"strategy":"sql","sql_entities":["lab_results"],"filters":{{}},"search_terms":["abnormal"]}}
+
+Query: "What medications is SUBJ-0003 taking?"
+{{"strategy":"sql","sql_entities":["medications"],"filters":{{"patient_id":"SUBJ-0003"}},"search_terms":[]}}
+
+Query: "Show prior medical history for SUBJ-0007"
+{{"strategy":"sql","sql_entities":["medical_history"],"filters":{{"patient_id":"SUBJ-0007"}},"search_terms":[]}}
+
+Query: "What is the phase of study NCT12345678?"
+{{"strategy":"sql","sql_entities":["studies"],"filters":{{"study_id":"NCT12345678"}},"search_terms":[]}}
+
+Query: "Who is the sponsor of the trial?"
+{{"strategy":"sql","sql_entities":["studies"],"filters":{{}},"search_terms":["sponsor"]}}
+
+Query: "Describe the hepatotoxicity case narrative for SUBJ-0001"
+{{"strategy":"vector","sql_entities":[],"filters":{{"patient_id":"SUBJ-0001"}},"search_terms":["hepatotoxicity","narrative","SUBJ-0001"]}}
+
+Query: "Show Grade 3 adverse events with lab context"
+{{"strategy":"hybrid","sql_entities":["adverse_events","lab_results"],"filters":{{"severity":"Grade 3"}},"search_terms":["grade 3","adverse event"]}}
+
+=== NOW CLASSIFY ===
 
 Query: {query}
 
-Determine the retrieval strategy needed:
-- "sql": Query needs structured database lookup (patient records, AE counts, demographics, lab values, medications)
-- "vector": Query needs semantic search in narrative documents (PDF reports, clinical descriptions)  
-- "hybrid": Query needs both structured data AND narrative context
-
-Also extract any filters mentioned:
-- study_id: Any study identifier (e.g., NCT numbers, study codes)
-- patient_id: Any patient identifier
-- age_filter: Age conditions (e.g., "> 60", "between 40 and 65")
-- severity: AE severity (MILD, MODERATE, SEVERE, grade 1-4)
-- serious_only: Whether only serious AEs are requested
-
-
-Return JSON only:
-{{
-  "strategy": "sql|vector|hybrid",
-  "sql_entities": ["tables needed: patients, adverse_events, lab_results, medications, medical_history, studies"],
-  "filters": {{
-    "study_id": null,
-    "patient_id": null,
-    "age_filter": null,
-    "severity": null,
-    "serious_only": false
-  }},
-  "search_terms": ["key terms for vector search"]
-}}
+Return ONLY valid JSON, no markdown, no extra text:
+{{"strategy": "sql|vector|hybrid", "sql_entities": ["only tables actually needed — patients/lab_results/medications/medical_history/adverse_events/studies"], "filters": {{"study_id": null, "patient_id": null, "age_filter": null, "severity": null, "serious_only": false}}, "search_terms": ["key terms for vector search only"]}}
 """
 
 SUMMARY_PROMPT = """Summarize this investigation session in 2-3 sentences for context injection.
