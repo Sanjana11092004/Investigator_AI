@@ -47,35 +47,41 @@ class SQLRetriever:
                 return agg
 
         # ── Listing path ──
-        if "adverse_events" in entities or self._query_mentions_ae(original_query):
+        # The classifier's entity list is authoritative; the keyword heuristics
+        # only act as a fallback when the classifier returned no entities (so a
+        # "studies" question isn't polluted with AE/medical-history rows just
+        # because a disease word appears).
+        fb = not entities
+
+        if "adverse_events" in entities or (fb and self._query_mentions_ae(original_query)):
             results.extend(self._query_adverse_events(
                 study_id=study_id, patient_id=patient_id,
                 serious_only=serious_only, severity=severity,
                 query_text=original_query,
             ))
 
-        if "patients" in entities or self._query_mentions_patients(original_query):
+        if "patients" in entities or (fb and self._query_mentions_patients(original_query)):
             results.extend(self._query_patients(
                 study_id=study_id, patient_id=patient_id,
                 age_filter=age_filter, query_text=original_query,
             ))
 
-        if "lab_results" in entities or self._query_mentions_labs(original_query):
+        if "lab_results" in entities or (fb and self._query_mentions_labs(original_query)):
             results.extend(self._query_lab_results(
                 patient_id=patient_id, study_id=study_id, query_text=original_query,
             ))
 
-        if "medications" in entities or self._query_mentions_meds(original_query):
+        if "medications" in entities or (fb and self._query_mentions_meds(original_query)):
             results.extend(self._query_medications(
                 patient_id=patient_id, query_text=original_query,
             ))
 
-        if "medical_history" in entities or self._query_mentions_mh(original_query):
+        if "medical_history" in entities or (fb and self._query_mentions_mh(original_query)):
             results.extend(self._query_medical_history(
                 patient_id=patient_id, query_text=original_query,
             ))
 
-        if "studies" in entities or self._query_mentions_study(original_query):
+        if "studies" in entities or (fb and self._query_mentions_study(original_query)):
             results.extend(self._query_studies(study_id=study_id, query_text=original_query))
 
         return results[: settings.sql_max_rows]
@@ -207,6 +213,11 @@ class SQLRetriever:
         ql = query.lower()
         lines: List[str] = []
 
+        # Cross-entity decomposition ("metric X among patients with condition Y")
+        cross = self._cross_entity_analytic(query)
+        if cross:
+            return cross
+
         # Statistical (mean/max/min/argmax) takes precedence
         stat = self._stat_aggregate(query)
         if stat:
@@ -306,6 +317,147 @@ class SQLRetriever:
         content = "**Aggregate result(s) computed directly from the database:**\n" + \
                   "\n".join(f"- {l}" for l in lines)
         return [{"content": content, "source": "aggregate query", "type": "sql"}]
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Cross-entity query decomposition
+    # ══════════════════════════════════════════════════════════════════════
+    def _extract_age_filter_text(self, text: str):
+        import re as _re
+        t = text.lower()
+        m = _re.search(r'(?:over|above|older than|greater than|>)\s*(\d+)', t)
+        if m:
+            return f"> {m.group(1)}"
+        m = _re.search(r'(?:under|below|younger than|less than|<)\s*(\d+)', t)
+        if m:
+            return f"< {m.group(1)}"
+        m = _re.search(r'between\s*(\d+)\s*(?:and|-|to)\s*(\d+)', t)
+        if m:
+            return f"between {m.group(1)} and {m.group(2)}"
+        return None
+
+    def _cohort_usubjids(self, cohort_text: str):
+        """Return the set of USUBJIDs matching the cohort clause, or None if no
+        recognizable condition (so the caller can fall back to a normal query)."""
+        import re as _re
+        ql = cohort_text.lower()
+        sets = []
+
+        # AE-based cohort conditions
+        aeq = self.db.query(AdverseEvent.usubjid).distinct()
+        ae_applied = False
+        if "serious" in ql:
+            aeq = aeq.filter(AdverseEvent.aeserfl == "Y"); ae_applied = True
+        g = self._extract_grade(cohort_text)
+        if g:
+            aeq = aeq.filter(AdverseEvent.aegrade >= g); ae_applied = True
+        if self._mentions_fatal(cohort_text):
+            aeq = aeq.filter(or_(AdverseEvent.aesdth == "Y", AdverseEvent.aeout.ilike("%fatal%"))); ae_applied = True
+        if any(k in ql for k in ["adverse", "event", "toxicity", "reaction", " ae "]):
+            # exclude structural/flag words so we only term-match real AE names
+            GENERIC = {"serious", "grade", "among", "amongst", "fatal", "death",
+                       "deaths", "patients", "patient", "experienced", "having", "report"}
+            terms = [t for t in self._extract_medical_keywords(cohort_text)
+                     if t not in self.LAB_TERMS and t not in GENERIC]
+            if terms:
+                aeq = aeq.filter(or_(
+                    *[AdverseEvent.aeterm.ilike(f"%{t}%") for t in terms] +
+                     [AdverseEvent.aedecod.ilike(f"%{t}%") for t in terms]))
+                ae_applied = True
+        if ae_applied:
+            sets.append({u for (u,) in aeq.all()})
+
+        # Patient-based cohort conditions (age / sex / arm / race / diagnosis)
+        pq = self.db.query(Patient.usubjid)
+        p_applied = False
+        age = self._extract_age_filter_text(cohort_text)
+        if age:
+            pq = self._apply_age_filter(pq, age); p_applied = True
+        if any(w in ql for w in ["female", "male", "women", "men", "placebo", "treatment arm",
+                                 "white", "asian", "black", "hispanic", "obese", "overweight"]):
+            pq = self._apply_patient_categorical(pq, ql); p_applied = True
+        diag = self._extract_diagnosis_keywords(cohort_text)
+        if diag:
+            pq = pq.filter(or_(
+                *[Patient.diagnosis.ilike(f"%{d}%") for d in diag] +
+                 [Patient.diagcd.ilike(f"%{d}%") for d in diag])); p_applied = True
+        if p_applied:
+            sets.append({u for (u,) in pq.all()})
+
+        if not sets:
+            return None
+        return set.intersection(*sets) if len(sets) > 1 else sets[0]
+
+    def _cross_entity_analytic(self, query: str):
+        """Decompose 'metric X among patients with condition Y' into:
+        (1) compute the cohort, (2) run the metric restricted to the cohort."""
+        import re as _re
+        ql = query.lower()
+        m = _re.search(
+            r'\b(?:among|amongst|having)\b|\bfor patients\b|\bin patients\b'
+            r'|\bwho (?:have|has|had)\b|\bthat (?:have|has|had)\b|\bwith\b', ql)
+        if not m:
+            return None
+
+        metric_part = query[:m.start()]
+        cohort_part = query[m.start():]
+        cohort = self._cohort_usubjids(cohort_part)
+        if cohort is None:
+            return None  # unrecognized cohort → let the normal path handle it
+
+        words = cohort_part.strip().rstrip("?.!").split()
+        fillers = {"among", "amongst", "for", "in", "who", "that", "with",
+                   "having", "the", "patients", "patient"}
+        while words and words[0].lower() in fillers:
+            words.pop(0)
+        cohort_desc = " ".join(words) or "the cohort"
+
+        if not cohort:
+            return [{"content": f"No patients match the cohort '{cohort_desc}', so the metric cannot be computed.",
+                     "source": "aggregate query (decomposed)", "type": "sql"}]
+
+        cohort = list(cohort)
+        mql = metric_part.lower()
+        is_max = any(k in mql for k in ["highest", "maximum", "max ", "largest", "greatest"])
+        is_min = any(k in mql for k in ["lowest", "minimum", "min ", "smallest"])
+        lines = [f"Cohort — patients with {cohort_desc}: **{len(cohort)} patients**"]
+
+        code, label = self._detect_lab(mql)
+        if code:
+            base = self.db.query(LabResult).filter(
+                LabResult.lbtestcd.ilike(code), LabResult.lbstresn.isnot(None),
+                LabResult.usubjid.in_(cohort))
+            n = base.count()
+            if n == 0:
+                lines.append(f"No {label} measurements found in this cohort.")
+            else:
+                ur = base.with_entities(LabResult.lbstresu).first()
+                unit = ur[0] if ur and ur[0] else ""
+                if is_max:
+                    r = base.order_by(LabResult.lbstresn.desc()).first()
+                    lines.append(f"Highest {label} in this cohort: **{r.lbstresn} {unit}** (patient {r.usubjid})")
+                elif is_min:
+                    r = base.order_by(LabResult.lbstresn.asc()).first()
+                    lines.append(f"Lowest {label} in this cohort: **{r.lbstresn} {unit}** (patient {r.usubjid})")
+                else:
+                    avg = base.with_entities(func.avg(LabResult.lbstresn)).scalar()
+                    lines.append(f"Mean {label} in this cohort: **{round(float(avg), 2)} {unit}** (across {n} measurements)")
+        elif any(k in mql for k in ["adverse", "event", " ae "]):
+            aeq = self.db.query(AdverseEvent).filter(AdverseEvent.usubjid.in_(cohort))
+            srs = "serious" in mql
+            if srs:
+                aeq = aeq.filter(AdverseEvent.aeserfl == "Y")
+            g = self._extract_grade(metric_part)
+            if g:
+                aeq = aeq.filter(AdverseEvent.aegrade >= g)
+            lines.append(f"{'Serious ' if srs else ''}adverse-event records in this cohort: **{aeq.count()}**")
+        elif "age" in mql:
+            avg = self.db.query(func.avg(Patient.age)).filter(Patient.usubjid.in_(cohort)).scalar()
+            if avg is not None:
+                lines.append(f"Average age in this cohort: **{round(float(avg), 1)} years**")
+        # else: the cohort count line is the answer
+
+        content = "**Cross-entity result (query decomposition):**\n" + "\n".join(f"- {l}" for l in lines)
+        return [{"content": content, "source": "aggregate query (decomposed)", "type": "sql"}]
 
     # Lab name / synonym → SDTM test code
     LAB_TERMS = {
@@ -636,17 +788,46 @@ class SQLRetriever:
 
     def _query_studies(self, study_id=None, query_text="") -> List[Dict[str, Any]]:
         q = self._build_study_query(study_id, query_text)
+        # Keyword match on conditions / title / summary so cross-study reasoning
+        # ("summarize studies about hepatotoxicity") retrieves the right studies.
+        kws = self._study_keywords(query_text)
+        if kws:
+            kq = q.filter(or_(
+                *[ClinicalStudy.conditions.ilike(f"%{k}%") for k in kws] +
+                 [ClinicalStudy.brief_title.ilike(f"%{k}%") for k in kws] +
+                 [ClinicalStudy.brief_summary.ilike(f"%{k}%") for k in kws]))
+            if kq.count() > 0:        # only narrow if it actually matches something
+                q = kq
         total = q.count()
-        studies = q.limit(settings.sql_max_rows).all()
+        # Cross-study reasoning needs the summary text but it's large — cap rows.
+        limit = min(settings.sql_max_rows, 8)
+        studies = q.limit(limit).all()
         if not studies:
             return []
-        rows = [
-            f"Study {s.nct_id}: {s.brief_title} | Status: {s.overall_status} | Phase: {s.phase} | "
-            f"Condition: {s.conditions} | Sponsor: {s.lead_sponsor} | Enrolled: {s.enrollment_count}"
-            for s in studies
-        ]
-        content = self._header("Clinical Studies", total, len(rows)) + "\n" + "\n".join(rows)
+        rows = []
+        for s in studies:
+            summ = (s.brief_summary or "").strip().replace("\n", " ")
+            if len(summ) > 260:
+                summ = summ[:260] + "…"
+            rows.append(
+                f"Study {s.nct_id}: {s.brief_title} | Status: {s.overall_status} | "
+                f"Phase: {s.phase} | Conditions: {s.conditions} | Sponsor: {s.lead_sponsor} | "
+                f"Enrolled: {s.enrollment_count}\n  Summary: {summ or 'N/A'}")
+        content = self._header("Clinical Studies", total, len(rows)) + "\n" + "\n\n".join(rows)
         return [{"content": content, "source": "clinical_studies table", "type": "sql", "count": total}]
+
+    def _study_keywords(self, text: str) -> List[str]:
+        """Content keywords for matching studies — excludes reasoning verbs so a
+        question like 'summarize efficacy across studies' doesn't filter on
+        'summarize' / 'efficacy' and return nothing."""
+        REASONING = {
+            "summarize", "summary", "summarise", "compare", "comparison", "trend",
+            "trends", "efficacy", "risk", "across", "overview", "analyze", "analyse",
+            "analysis", "describe", "reported", "incidence", "pattern", "patterns",
+            "generate", "between", "highest", "lowest", "common", "studies", "study",
+            "trial", "trials", "overall", "various", "different", "treatment",
+        }
+        return [w for w in self._extract_medical_keywords(text) if w not in REASONING]
 
     # ══════════════════════════════════════════════════════════════════════
     # Helpers
