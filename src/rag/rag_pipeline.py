@@ -69,16 +69,19 @@ class RAGPipeline:
             sql_results = self.sql_retriever.retrieve(classification, question)
             logger.info(f"SQL RESULTS: {len(sql_results)}")
 
-        # Run semantic/vector retrieval when the strategy asks for it, when the
-        # question is document-oriented, OR as a fallback when SQL found nothing —
-        # this ensures uploaded PDF / narrative content is actually retrieved.
-        doc_intent = any(kw in question.lower() for kw in [
-            "document", "report", "narrative", "pdf", "summarize", "summary",
-            "says", "mention", "according to", "describe", "note", "case study",
-        ])
-        if strategy in ["vector", "hybrid"] or doc_intent or not sql_results:
+        # Vector (PDF narrative) retrieval:
+        #  • vector/hybrid → the classifier decided narrative is relevant, use the
+        #    normal relevance floor.
+        #  • sql strategy with NO rows → fall back to the narrative store, but only
+        #    accept STRONGLY relevant chunks (≥0.45) so unrelated PDF content is
+        #    never blended into a structured answer (avoids the PDF+CSV mix-up).
+        #  • sql strategy WITH rows → do NOT pull the PDF at all.
+        if strategy in ["vector", "hybrid"]:
             vector_results = self.vector_retriever.retrieve(question)
             logger.info(f"VECTOR RESULTS: {len(vector_results)}")
+        elif not sql_results:
+            vector_results = self.vector_retriever.retrieve(question, min_similarity=0.45)
+            logger.info(f"VECTOR FALLBACK RESULTS: {len(vector_results)}")
 
         all_results = sql_results + vector_results
 
