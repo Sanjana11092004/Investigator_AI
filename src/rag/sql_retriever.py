@@ -8,6 +8,7 @@ Two modes:
     (e.g. "Adverse Events (154 total, showing 20)") so the model never reports the
     capped row count as if it were the total.
 """
+import json
 from typing import Dict, Any, List
 
 from sqlalchemy.orm import Session
@@ -235,16 +236,28 @@ class SQLRetriever:
         age_filter   = filters.get("age_filter")
         grade        = self._extract_grade(query)
 
-        wants_patients = ("patient" in ql or "subject" in ql or "patients" in entities)
-        wants_ae = (any(k in ql for k in ["adverse", "event", " ae ", "toxicity", "reaction"])
-                    or serious_only or severity or grade or self._mentions_fatal(query)
-                    or "adverse_events" in entities)
-        wants_studies = (any(k in ql for k in ["stud", "trial", "nct", "sponsor", "enroll", "phase"])
-                         or "studies" in entities)
-        wants_labs = (any(k in ql for k in ["lab", "alt", "ast", "creatinine", "hemoglobin",
-                          "hba1c", "glucose"]) or "lab_results" in entities)
-        wants_meds = (any(k in ql for k in ["medication", "drug", "medicine", "concomitant"])
-                      or "medications" in entities)
+        # Classifier entities are authoritative; keyword heuristics only fall back
+        # when the classifier returned nothing (fb). This keeps a CSV question from
+        # silently pulling in JSON 'studies' data.
+        fb = not entities
+        wants_patients = ("patients" in entities) or (fb and ("patient" in ql or "subject" in ql))
+        wants_ae = ("adverse_events" in entities) or serious_only or severity or grade \
+            or self._mentions_fatal(query) \
+            or (fb and any(k in ql for k in ["adverse", "event", " ae ", "toxicity", "reaction"]))
+        wants_labs = ("lab_results" in entities) \
+            or (fb and any(k in ql for k in ["lab", "alt", "ast", "creatinine", "hemoglobin", "hba1c", "glucose"]))
+        wants_meds = ("medications" in entities) \
+            or (fb and any(k in ql for k in ["medication", "drug", "medicine", "concomitant"]))
+
+        # 'studies' (JSON) only when explicitly requested — never from the bare word
+        # "study"/"studies" if a CSV entity is already being answered.
+        csv_wanted = wants_patients or wants_ae or wants_labs or wants_meds
+        explicit_study = any(k in ql for k in ["nct", "trial", "sponsor", "enroll", "phase ",
+                                               "clinical study", "trial design", "protocol"])
+        if csv_wanted:
+            wants_studies = ("studies" in entities) or explicit_study
+        else:
+            wants_studies = ("studies" in entities) or explicit_study or ("stud" in ql)
 
         # Adverse-event aggregation (and distinct patients with that AE condition)
         if wants_ae:
@@ -799,22 +812,62 @@ class SQLRetriever:
             if kq.count() > 0:        # only narrow if it actually matches something
                 q = kq
         total = q.count()
-        # Cross-study reasoning needs the summary text but it's large — cap rows.
-        limit = min(settings.sql_max_rows, 8)
+        # A specific study (filtered by id/keyword down to a few) gets DEEP detail
+        # pulled from raw_json; broad cross-study queries stay summary-only (token budget).
+        specific = bool(study_id) or total <= 2
+        limit = 3 if specific else min(settings.sql_max_rows, 8)
         studies = q.limit(limit).all()
         if not studies:
             return []
         rows = []
         for s in studies:
             summ = (s.brief_summary or "").strip().replace("\n", " ")
-            if len(summ) > 260:
-                summ = summ[:260] + "…"
-            rows.append(
-                f"Study {s.nct_id}: {s.brief_title} | Status: {s.overall_status} | "
-                f"Phase: {s.phase} | Conditions: {s.conditions} | Sponsor: {s.lead_sponsor} | "
-                f"Enrolled: {s.enrollment_count}\n  Summary: {summ or 'N/A'}")
+            if len(summ) > (600 if specific else 260):
+                summ = summ[: (600 if specific else 260)] + "…"
+            block = (f"Study {s.nct_id}: {s.brief_title} | Status: {s.overall_status} | "
+                     f"Phase: {s.phase} | Conditions: {s.conditions} | Sponsor: {s.lead_sponsor} | "
+                     f"Enrolled: {s.enrollment_count}\n  Summary: {summ or 'N/A'}")
+            if specific:
+                detail = self._study_detail(s.raw_json)
+                if detail:
+                    block += "\n  " + detail
+            rows.append(block)
         content = self._header("Clinical Studies", total, len(rows)) + "\n" + "\n\n".join(rows)
         return [{"content": content, "source": "clinical_studies table", "type": "sql", "count": total}]
+
+    def _study_detail(self, raw_json) -> str:
+        """Extract deep narrative fields from a study's stored raw JSON so the LLM
+        can answer detailed questions (eligibility, outcomes, interventions, arms)."""
+        if not raw_json:
+            return ""
+        try:
+            data = json.loads(raw_json)
+        except Exception:
+            return ""
+        proto = data.get("protocolSection", {})
+        parts = []
+        dd = (proto.get("descriptionModule", {}) or {}).get("detailedDescription")
+        if dd:
+            parts.append("Detailed description: " + dd[:600])
+        elig = (proto.get("eligibilityModule", {}) or {}).get("eligibilityCriteria")
+        if elig:
+            parts.append("Eligibility: " + elig.replace("\n", " ")[:500])
+        om = proto.get("outcomesModule", {}) or {}
+        prim = om.get("primaryOutcomes", []) or []
+        if prim:
+            parts.append("Primary outcomes: " + "; ".join(o.get("measure", "") for o in prim[:4]))
+        sec = om.get("secondaryOutcomes", []) or []
+        if sec:
+            parts.append("Secondary outcomes: " + "; ".join(o.get("measure", "") for o in sec[:3]))
+        arms = proto.get("armsInterventionsModule", {}) or {}
+        ints = arms.get("interventions", []) or []
+        if ints:
+            parts.append("Interventions: " + "; ".join(
+                f"{i.get('type', '')}: {i.get('name', '')}" for i in ints[:5]))
+        armg = arms.get("armGroups", []) or []
+        if armg:
+            parts.append("Arms: " + "; ".join(a.get("label", "") for a in armg[:5]))
+        return "\n  ".join(parts)
 
     def _study_keywords(self, text: str) -> List[str]:
         """Content keywords for matching studies — excludes reasoning verbs so a

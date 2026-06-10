@@ -76,15 +76,22 @@ class RAGPipeline:
         #    accept STRONGLY relevant chunks (≥0.45) so unrelated PDF content is
         #    never blended into a structured answer (avoids the PDF+CSV mix-up).
         #  • sql strategy WITH rows → do NOT pull the PDF at all.
-        if strategy in ["vector", "hybrid"]:
+        # If THIS session uploaded its own document(s), always search them and
+        # prioritise them — so a question about an uploaded file is answered from
+        # that file even when the classifier chose the 'sql' strategy and SQL
+        # happened to return rows.
+        session_has_docs = bool(session_id) and self.vector_retriever.has_session_docs(session_id)
+
+        if strategy in ["vector", "hybrid"] or session_has_docs:
             vector_results = self.vector_retriever.retrieve(question, session_id=session_id)
-            logger.info(f"VECTOR RESULTS: {len(vector_results)}")
+            logger.info(f"VECTOR RESULTS: {len(vector_results)} (session_docs={session_has_docs})")
         elif not sql_results:
             vector_results = self.vector_retriever.retrieve(
                 question, min_similarity=0.45, session_id=session_id)
             logger.info(f"VECTOR FALLBACK RESULTS: {len(vector_results)}")
 
-        all_results = sql_results + vector_results
+        # Prioritise the uploaded document's evidence when the session has one.
+        all_results = (vector_results + sql_results) if session_has_docs else (sql_results + vector_results)
 
         # 3. Format evidence for LLM
         evidence_text = self._format_evidence(all_results)

@@ -17,6 +17,15 @@ class VectorRetriever:
     Returns relevant text chunks with source metadata.
     """
 
+    def has_session_docs(self, session_id: str) -> bool:
+        """True if this session has uploaded its own document(s)."""
+        if not session_id:
+            return False
+        try:
+            return get_vector_store().has_docs_for(session_id)
+        except Exception:
+            return False
+
     def retrieve(
         self,
         query: str,
