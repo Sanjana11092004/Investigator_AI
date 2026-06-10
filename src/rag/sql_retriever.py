@@ -250,15 +250,27 @@ class SQLRetriever:
 
         if wants_studies:
             sq = self._build_study_query(study_id, query)
-            lines.append(f"Studies matching the query: **{sq.count()}**")
+            desc = self._study_filter_desc(query)
+            label = (desc + "studies").strip() if desc else "Studies"
+            lines.append(f"{label[0].upper() + label[1:]}: **{sq.count()}**")
 
         if wants_labs:
             lq = self.db.query(LabResult)
             if patient_id:
                 lq = lq.filter(LabResult.usubjid.ilike(f"%{patient_id}%"))
-            if "abnormal" in ql or "high" in ql or "low" in ql:
+            abnormal = ("abnormal" in ql or "high" in ql or "low" in ql or "elevated" in ql)
+            if abnormal:
                 lq = lq.filter(LabResult.lbnrind.in_(["HIGH", "LOW"]))
-            lines.append(f"Lab result records matching the query: **{lq.count()}**")
+            test_label = ""
+            for code in ["alt", "ast", "creatinine", "hemoglobin", "hba1c", "glucose",
+                         "bilirubin", "wbc", "platelet", "albumin"]:
+                if code in ql:
+                    lq = lq.filter(or_(LabResult.lbtestcd.ilike(f"%{code}%"),
+                                       LabResult.lbtest.ilike(f"%{code}%")))
+                    test_label = code.upper() + " "
+                    break
+            label = (("abnormal " if abnormal else "") + test_label + "lab results").strip()
+            lines.append(f"{label[0].upper() + label[1:]}: **{lq.count()}**")
 
         if wants_meds:
             mq = self.db.query(ConcomitantMedication)
@@ -329,6 +341,20 @@ class SQLRetriever:
         content = "**Breakdown computed directly from the database:**\n" + \
                   "\n".join(f"- {l}" for l in lines)
         return [{"content": content, "source": "aggregate query", "type": "sql"}]
+
+    def _study_filter_desc(self, query: str) -> str:
+        import re as _re
+        ql = query.lower()
+        parts = []
+        for st in ["completed", "recruiting", "terminated", "withdrawn",
+                   "active", "suspended", "enrolling"]:
+            if st in ql:
+                parts.append(st + " ")
+                break
+        ph = _re.search(r'phase\s*([1-4])', ql)
+        if ph:
+            parts.append(f"phase-{ph.group(1)} ")
+        return "".join(parts)
 
     def _patient_filter_desc(self, filters: Dict[str, Any], query: str) -> str:
         """Human-readable label of the patient filters in the query, so the
@@ -530,7 +556,14 @@ class SQLRetriever:
             "the", "a", "an", "in", "of", "for", "and", "or", "with", "patients",
             "study", "patient", "data", "results", "give", "me", "tell", "above",
             "below", "only", "have", "had", "were", "who", "does", "count", "number",
-            "total", "average", "them", "their", "they", "are", "is",
+            "total", "average", "them", "their", "they", "are", "is", "there",
+            # generic category words — these name a TABLE, not a specific term to match
+            "adverse", "event", "events", "reaction", "reactions", "effect", "effects",
+            "medication", "medications", "medicine", "medicines", "drug", "drugs",
+            "concomitant", "lab", "labs", "laboratory", "test", "tests", "result",
+            "record", "records", "trial", "trials", "studies", "value", "values",
+            "enrolled", "assigned", "primary", "report", "reported", "cohort",
+            "database", "across", "much", "were", "was",
         }
         words = [w.strip(".,?!;:'\"") for w in text.lower().split()]
         LAB_SHORT_CODES = {"alt", "ast", "wbc", "ldh", "cd4", "egfr", "hb"}
