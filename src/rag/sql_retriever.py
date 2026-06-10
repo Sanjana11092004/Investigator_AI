@@ -193,16 +193,24 @@ class SQLRetriever:
     def _is_aggregation(self, query: str) -> bool:
         ql = (query or "").lower()
         triggers = ["how many", "how much", "number of", "count of", "count the",
-                    "total number", "total count", "average", "avg ", "mean ",
+                    "total number", "total count", "average", "avg ", "mean ", "mean ",
                     "percentage", "what percent", "proportion of",
-                    "most common", "most frequent", "most prevalent", "top ",
+                    "most common", "most frequent", "most prevalent", "top ", "most ",
                     "distribution", "breakdown", "group by", "by diagnosis",
-                    "by severity", "by phase", "by sex", "by arm", "by status"]
+                    "by severity", "by phase", "by sex", "by arm", "by status",
+                    # statistical
+                    "highest", "lowest", "maximum", "minimum", "max ", "min ",
+                    "oldest", "youngest", "largest", "smallest", "greatest", "median"]
         return any(t in ql for t in triggers) or ql.strip().startswith("count ")
 
     def _aggregate(self, filters: Dict[str, Any], entities, query: str) -> List[Dict[str, Any]]:
         ql = query.lower()
         lines: List[str] = []
+
+        # Statistical (mean/max/min/argmax) takes precedence
+        stat = self._stat_aggregate(query)
+        if stat:
+            return stat
 
         # "most common / top / distribution" → GROUP BY breakdown
         gb = self._group_by_aggregate(ql)
@@ -296,6 +304,115 @@ class SQLRetriever:
         if not lines:
             return []
         content = "**Aggregate result(s) computed directly from the database:**\n" + \
+                  "\n".join(f"- {l}" for l in lines)
+        return [{"content": content, "source": "aggregate query", "type": "sql"}]
+
+    # Lab name / synonym → SDTM test code
+    LAB_TERMS = {
+        "sgpt": "ALT", "alt": "ALT", "sgot": "AST", "ast": "AST",
+        "creatinine": "CREAT", "creat": "CREAT", "bilirubin": "BILI", "bili": "BILI",
+        "albumin": "ALB", "alkaline phosphatase": "ALP", "alk phos": "ALP", "alp": "ALP",
+        "ggt": "GGT", "hemoglobin": "HGB", "haemoglobin": "HGB", "hgb": "HGB",
+        "wbc": "WBC", "platelet": "PLAT", "hba1c": "HBA1C", "egfr": "EGFR",
+        "bun": "BUN", "cd4": "CD4", "cholesterol": "CHOL", "crp": "CRP",
+        "esr": "ESR", "amylase": "AMYLASE", "bnp": "BNP", "fev1": "FEV1", "glucose": "GLUC",
+    }
+
+    def _detect_lab(self, ql: str):
+        import re as _re
+        for term in sorted(self.LAB_TERMS, key=len, reverse=True):
+            if len(term) <= 4:                       # short codes need word boundary
+                if _re.search(rf'\b{_re.escape(term)}\b', ql):
+                    return self.LAB_TERMS[term], term.upper()
+            elif term in ql:
+                return self.LAB_TERMS[term], term.upper()
+        return None, None
+
+    def _stat_aggregate(self, query: str):
+        """mean / max / min (with the argmax patient) over numeric columns:
+        lab values, age, BMI, study enrollment, and study-with-most-AEs."""
+        ql = query.lower()
+        is_mean = any(k in ql for k in ["mean", "average", "avg"])
+        is_max = any(k in ql for k in ["highest", "maximum", "max ", "largest",
+                                       "greatest", "peak", "oldest", "most "])
+        is_min = any(k in ql for k in ["lowest", "minimum", "min ", "smallest", "youngest"])
+        if not (is_mean or is_max or is_min):
+            return None
+
+        lines = []
+
+        # ── Lab value statistics ──
+        code, label = self._detect_lab(ql)
+        if code:
+            base = self.db.query(LabResult).filter(
+                LabResult.lbtestcd.ilike(code), LabResult.lbstresn.isnot(None))
+            n = base.count()
+            if n:
+                ur = base.with_entities(LabResult.lbstresu).first()
+                unit = (ur[0] if ur and ur[0] else "")
+                if is_mean:
+                    avg = base.with_entities(func.avg(LabResult.lbstresn)).scalar()
+                    lines.append(f"Mean {label}: **{round(float(avg), 2)} {unit}** (across {n} measurements)")
+                if is_max:
+                    r = base.order_by(LabResult.lbstresn.desc()).first()
+                    lines.append(f"Highest {label}: **{r.lbstresn} {unit}** — patient {r.usubjid} (visit {r.visit or 'N/A'})")
+                if is_min:
+                    r = base.order_by(LabResult.lbstresn.asc()).first()
+                    lines.append(f"Lowest {label}: **{r.lbstresn} {unit}** — patient {r.usubjid} (visit {r.visit or 'N/A'})")
+
+        # ── Age ──
+        if "age" in ql or "oldest" in ql or "youngest" in ql:
+            if is_mean and "age" in ql:
+                a = self.db.query(func.avg(Patient.age)).scalar()
+                if a is not None:
+                    lines.append(f"Average patient age: **{round(float(a), 1)} years**")
+            if is_max or "oldest" in ql:
+                p = self.db.query(Patient).filter(Patient.age.isnot(None)).order_by(Patient.age.desc()).first()
+                if p:
+                    lines.append(f"Oldest patient: **{p.usubjid}** ({p.age} years)")
+            if is_min or "youngest" in ql:
+                p = self.db.query(Patient).filter(Patient.age.isnot(None)).order_by(Patient.age.asc()).first()
+                if p:
+                    lines.append(f"Youngest patient: **{p.usubjid}** ({p.age} years)")
+
+        # ── BMI ──
+        if "bmi" in ql:
+            if is_mean:
+                a = self.db.query(func.avg(Patient.bmi)).scalar()
+                if a is not None:
+                    lines.append(f"Average BMI: **{round(float(a), 1)}**")
+            if is_max:
+                p = self.db.query(Patient).filter(Patient.bmi.isnot(None)).order_by(Patient.bmi.desc()).first()
+                if p:
+                    lines.append(f"Highest BMI: **{p.bmi}** — patient {p.usubjid}")
+
+        # ── Study enrollment ──
+        if "enroll" in ql:
+            if is_mean:
+                a = self.db.query(func.avg(ClinicalStudy.enrollment_count)).scalar()
+                if a is not None:
+                    lines.append(f"Average study enrollment: **{round(float(a))}** participants")
+            if is_max:
+                s = (self.db.query(ClinicalStudy).filter(ClinicalStudy.enrollment_count.isnot(None))
+                     .order_by(ClinicalStudy.enrollment_count.desc()).first())
+                if s:
+                    lines.append(f"Largest enrollment: **{s.enrollment_count}** — {s.nct_id} ({s.brief_title})")
+
+        # ── Study with the most (serious) adverse events ──
+        if ("study" in ql or "studies" in ql) and any(k in ql for k in ["adverse", "serious", " ae "]):
+            q = self.db.query(AdverseEvent.studyid, func.count(AdverseEvent.id))
+            serious = "serious" in ql
+            if serious:
+                q = q.filter(AdverseEvent.aeserfl == "Y")
+            rows = q.group_by(AdverseEvent.studyid).order_by(func.count(AdverseEvent.id).desc()).limit(5).all()
+            if rows:
+                top = rows[0]
+                lines.append(f"Study with the most {'serious ' if serious else ''}adverse events: "
+                             f"**{top[0]}** ({top[1]} events)")
+
+        if not lines:
+            return None
+        content = "**Statistical result(s) computed directly from the database:**\n" + \
                   "\n".join(f"- {l}" for l in lines)
         return [{"content": content, "source": "aggregate query", "type": "sql"}]
 

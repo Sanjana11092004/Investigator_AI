@@ -58,11 +58,17 @@ class LongTermMemory:
 
         Returns None if session not found.
         """
-        return (
-            self.db.query(InvestigationSession)
-            .filter(InvestigationSession.id == session_id)
-            .first()
-        )
+        try:
+            return (
+                self.db.query(InvestigationSession)
+                .filter(InvestigationSession.id == session_id)
+                .first()
+            )
+        except Exception as e:
+            # e.g. a malformed (non-UUID) session id — don't 500, treat as missing
+            logger.warning(f"load_session failed for id={session_id!r}: {e}")
+            self.db.rollback()
+            return None
 
     def list_sessions(self, limit: int = 20) -> List[InvestigationSession]:
         """Return recent active sessions, newest first."""
