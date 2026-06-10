@@ -126,6 +126,44 @@ class SQLRetriever:
                 *[Patient.diagnosis.ilike(f"%{kw}%") for kw in diag_keywords] +
                  [Patient.diagcd.ilike(f"%{kw}%") for kw in diag_keywords]
             ))
+        q = self._apply_patient_categorical(q, (query_text or "").lower())
+        return q
+
+    def _apply_patient_categorical(self, q, ql: str):
+        """Apply demographic/categorical filters parsed from the query text:
+        sex, treatment arm, race, BMI category, smoking status."""
+        import re as _re
+        # sex — check 'female'/'women' before 'male' ('female' contains 'male')
+        if "female" in ql or "women" in ql or "woman" in ql:
+            q = q.filter(Patient.sex.ilike("F"))
+        elif "male" in ql or _re.search(r'\bmen\b', ql) or "males" in ql:
+            q = q.filter(Patient.sex.ilike("M"))
+        # treatment arm
+        if "placebo" in ql:
+            q = q.filter(or_(Patient.arm.ilike("%placebo%"), Patient.actarm.ilike("%placebo%")))
+        elif "treatment arm" in ql or "active arm" in ql or "active treatment" in ql or "treatment group" in ql:
+            q = q.filter(or_(Patient.arm.ilike("%treat%"), Patient.actarm.ilike("%treat%")))
+        # race
+        for race in ["white", "asian", "black", "hispanic"]:
+            if _re.search(rf'\b{race}\b', ql):
+                q = q.filter(Patient.race.ilike(f"%{race}%"))
+                break
+        # BMI category
+        if "obese" in ql or "obesity" in ql:
+            q = q.filter(Patient.bmicat.ilike("%obese%"))
+        elif "overweight" in ql:
+            q = q.filter(Patient.bmicat.ilike("%overweight%"))
+        elif "underweight" in ql:
+            q = q.filter(Patient.bmicat.ilike("%underweight%"))
+        elif "normal weight" in ql or "normal bmi" in ql:
+            q = q.filter(Patient.bmicat.ilike("%normal%"))
+        # smoking status (specific phrases only, to avoid false matches)
+        if "former smoker" in ql or "ex-smoker" in ql or "ex smoker" in ql:
+            q = q.filter(Patient.smokestat.ilike("%former%"))
+        elif "never smoked" in ql or "non-smoker" in ql or "nonsmoker" in ql or "never smoker" in ql:
+            q = q.filter(Patient.smokestat.ilike("%never%"))
+        elif "current smoker" in ql:
+            q = q.filter(Patient.smokestat.ilike("%current%"))
         return q
 
     def _build_study_query(self, study_id=None, query_text=""):
@@ -156,12 +194,20 @@ class SQLRetriever:
         ql = (query or "").lower()
         triggers = ["how many", "how much", "number of", "count of", "count the",
                     "total number", "total count", "average", "avg ", "mean ",
-                    "percentage", "what percent", "proportion of"]
+                    "percentage", "what percent", "proportion of",
+                    "most common", "most frequent", "most prevalent", "top ",
+                    "distribution", "breakdown", "group by", "by diagnosis",
+                    "by severity", "by phase", "by sex", "by arm", "by status"]
         return any(t in ql for t in triggers) or ql.strip().startswith("count ")
 
     def _aggregate(self, filters: Dict[str, Any], entities, query: str) -> List[Dict[str, Any]]:
         ql = query.lower()
         lines: List[str] = []
+
+        # "most common / top / distribution" → GROUP BY breakdown
+        gb = self._group_by_aggregate(ql)
+        if gb:
+            return gb
 
         study_id     = filters.get("study_id")
         patient_id   = filters.get("patient_id")
@@ -192,7 +238,15 @@ class SQLRetriever:
             lines.append(f"{desc.capitalize() or 'Total '}adverse-event records: **{n_ae}**")
         elif wants_patients:
             pq = self._build_patient_query(study_id, patient_id, age_filter, query)
-            lines.append(f"Patients matching the query: **{pq.count()}**")
+            n = pq.count()
+            total = self.db.query(Patient).count()
+            desc = self._patient_filter_desc(filters, query).strip()
+            label = (desc[0].upper() + desc[1:] + " patients") if desc else "Patients"
+            if n != total and total:
+                pct = round(100.0 * n / total, 1)
+                lines.append(f"{label}: **{n}** ({pct}% of the {total}-patient cohort)")
+            else:
+                lines.append(f"Total patients in the database: **{n}**")
 
         if wants_studies:
             sq = self._build_study_query(study_id, query)
@@ -232,6 +286,79 @@ class SQLRetriever:
         content = "**Aggregate result(s) computed directly from the database:**\n" + \
                   "\n".join(f"- {l}" for l in lines)
         return [{"content": content, "source": "aggregate query", "type": "sql"}]
+
+    def _group_by_aggregate(self, ql: str):
+        """Handle 'most common / top / distribution / breakdown by X' via GROUP BY."""
+        if not any(k in ql for k in ["most common", "most frequent", "most prevalent",
+                                     "top ", "distribution", "breakdown", "group by",
+                                     "by diagnosis", "by severity", "by phase",
+                                     "by sex", "by arm", "by status"]):
+            return None
+
+        def run(col, model, limit=8):
+            rows = (self.db.query(col, func.count(model.id))
+                    .group_by(col).order_by(func.count(model.id).desc()).limit(limit).all())
+            return [(v if v not in (None, "") else "N/A", c) for v, c in rows]
+
+        def fmt(label, rows):
+            return f"{label}: " + ", ".join(f"{v} ({c})" for v, c in rows)
+
+        lines = []
+        if any(k in ql for k in ["diagnos", "condition", "disease"]):
+            lines.append(fmt("Patients by diagnosis (most common first)",
+                             run(Patient.diagnosis, Patient)))
+        if "sex" in ql or "gender" in ql:
+            lines.append(fmt("Patients by sex", run(Patient.sex, Patient)))
+        if "arm" in ql or "treatment group" in ql:
+            lines.append(fmt("Patients by study arm", run(Patient.arm, Patient)))
+        if "severity" in ql:
+            lines.append(fmt("Adverse events by severity", run(AdverseEvent.aesev, AdverseEvent)))
+        if any(k in ql for k in ["adverse", "event", " ae "]) and "severity" not in ql:
+            lines.append(fmt("Adverse events by type (most common first)",
+                             run(AdverseEvent.aedecod, AdverseEvent)))
+        if "phase" in ql:
+            lines.append(fmt("Studies by phase", run(ClinicalStudy.phase, ClinicalStudy)))
+        if "status" in ql:
+            lines.append(fmt("Studies by status", run(ClinicalStudy.overall_status, ClinicalStudy)))
+        if any(k in ql for k in ["medication", "drug", "medicine"]):
+            lines.append(fmt("Medications by type (most common first)",
+                             run(ConcomitantMedication.cmdecod, ConcomitantMedication)))
+
+        if not lines:
+            return None
+        content = "**Breakdown computed directly from the database:**\n" + \
+                  "\n".join(f"- {l}" for l in lines)
+        return [{"content": content, "source": "aggregate query", "type": "sql"}]
+
+    def _patient_filter_desc(self, filters: Dict[str, Any], query: str) -> str:
+        """Human-readable label of the patient filters in the query, so the
+        aggregate count is unambiguous (e.g. 'female placebo-arm')."""
+        import re as _re
+        ql = query.lower()
+        parts = []
+        if "female" in ql or "women" in ql or "woman" in ql:
+            parts.append("female ")
+        elif "male" in ql or _re.search(r'\bmen\b', ql):
+            parts.append("male ")
+        if "placebo" in ql:
+            parts.append("placebo-arm ")
+        elif any(k in ql for k in ["treatment arm", "active arm", "active treatment", "treatment group"]):
+            parts.append("treatment-arm ")
+        for race in ["white", "asian", "black", "hispanic"]:
+            if _re.search(rf'\b{race}\b', ql):
+                parts.append(f"{race} ")
+                break
+        if "obese" in ql or "obesity" in ql:
+            parts.append("obese ")
+        elif "overweight" in ql:
+            parts.append("overweight ")
+        af = filters.get("age_filter")
+        if af:
+            parts.append(f"age {af} ")
+        for d in self._extract_diagnosis_keywords(query):
+            parts.append(f"{d} ")
+            break
+        return "".join(parts)
 
     def _ae_filter_desc(self, filters: Dict[str, Any], query: str) -> str:
         parts = []
