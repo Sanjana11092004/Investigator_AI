@@ -8,6 +8,7 @@ __pycache__/
 chroma_db/
 embedding_cache/
 data/
+json_store/
 
 # Virtual env
 venv/

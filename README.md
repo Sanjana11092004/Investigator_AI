@@ -261,6 +261,7 @@ session). LLM calls are mocked, so **no live Groq key is required** to run the s
 | **[docs/PIPELINES.md](docs/PIPELINES.md)** | The five pipelines explained |
 | **[docs/DATA_PROCESSING.md](docs/DATA_PROCESSING.md)** | How each source is parsed & stored; schema |
 | **[docs/TECH_STACK.md](docs/TECH_STACK.md)** | Every dependency, version, and rationale |
+| **[docs/JSON_STORE.md](docs/JSON_STORE.md)** | Unified JSON representation layer + metadata schema |
 | **[HOW_TO_CHECK.md](HOW_TO_CHECK.md)** | Requirement-by-requirement verification guide |
 
 ---
