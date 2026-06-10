@@ -49,6 +49,9 @@ class PDFIngestor(BaseIngestor):
             return {"success": False, "records": 0, "message": str(e)}
 
         file_name = Path(kwargs.get("original_filename") or file_path).name
+        # Tag chunks with the uploading session for per-session scoping; bundled /
+        # bulk-ingested documents (no session) are 'global' and visible to all.
+        session_id = kwargs.get("session_id") or "global"
         all_chunks = []
         all_metadatas = []
         all_ids = []
@@ -66,6 +69,7 @@ class PDFIngestor(BaseIngestor):
                     "page": page_num,
                     "chunk_index": chunk_idx,
                     "doc_type": "narrative_pdf",
+                    "session_id": session_id,
                 })
                 all_ids.append(chunk_id)
 

@@ -77,10 +77,11 @@ class RAGPipeline:
         #    never blended into a structured answer (avoids the PDF+CSV mix-up).
         #  • sql strategy WITH rows → do NOT pull the PDF at all.
         if strategy in ["vector", "hybrid"]:
-            vector_results = self.vector_retriever.retrieve(question)
+            vector_results = self.vector_retriever.retrieve(question, session_id=session_id)
             logger.info(f"VECTOR RESULTS: {len(vector_results)}")
         elif not sql_results:
-            vector_results = self.vector_retriever.retrieve(question, min_similarity=0.45)
+            vector_results = self.vector_retriever.retrieve(
+                question, min_similarity=0.45, session_id=session_id)
             logger.info(f"VECTOR FALLBACK RESULTS: {len(vector_results)}")
 
         all_results = sql_results + vector_results

@@ -98,6 +98,16 @@ class VectorStore:
         """Return total number of chunks in the store."""
         return self.collection.count()
 
+    def has_docs_for(self, session_id: str) -> bool:
+        """True if any chunk was uploaded under this session id."""
+        if not session_id:
+            return False
+        try:
+            res = self.collection.get(where={"session_id": session_id}, limit=1)
+            return bool(res.get("ids"))
+        except Exception:
+            return False
+
     def delete_by_source(self, file_name: str) -> None:
         """
         Delete all chunks from a specific source file.

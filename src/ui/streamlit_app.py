@@ -207,11 +207,22 @@ def _error_result(msg: str, session_id):
     }
 
 
-def api_upload_file(file_bytes: bytes, filename: str) -> dict:
+def api_create_session(name: str = None) -> Optional[str]:
     try:
+        r = requests.post(f"{API_BASE}/sessions", json={"name": name}, timeout=10)
+        r.raise_for_status()
+        return r.json().get("id")
+    except Exception:
+        return None
+
+
+def api_upload_file(file_bytes: bytes, filename: str, session_id: Optional[str] = None) -> dict:
+    try:
+        data = {"session_id": session_id} if session_id else {}
         resp = requests.post(
             f"{API_BASE}/ingest/upload",
             files={"file": (filename, file_bytes)},
+            data=data,
             timeout=180,
         )
         resp.raise_for_status()
@@ -396,8 +407,11 @@ def render_sidebar(backend_ok: bool):
             help="SDTM CSV (DM/AE/LB/CM/MH), ClinicalTrials JSON, or narrative PDF",
         )
         if up and st.button("⬆️  Ingest file", use_container_width=True):
+            # Tie the upload to this investigation so it's scoped to this session
+            if not st.session_state.session_id:
+                st.session_state.session_id = api_create_session("Investigation")
             with st.spinner(f"Ingesting {up.name}…"):
-                res = api_upload_file(up.getvalue(), up.name)
+                res = api_upload_file(up.getvalue(), up.name, st.session_state.session_id)
             if res.get("success"):
                 if res.get("records", 0) == 0:
                     st.info(f"ℹ️ {res.get('message', 'Already ingested.')}")

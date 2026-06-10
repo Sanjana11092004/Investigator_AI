@@ -5,9 +5,9 @@ GET  /ingest/documents — list all ingested documents
 """
 import os
 import tempfile
-from typing import List
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
+from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, Form
 from sqlalchemy.orm import Session
 from loguru import logger
 
@@ -23,6 +23,7 @@ router = APIRouter(prefix="/ingest", tags=["Ingestion"])
 @router.post("/upload", response_model=IngestResponse)
 async def upload_and_ingest(
     file: UploadFile = File(...),
+    session_id: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ) -> IngestResponse:
     """
@@ -59,6 +60,7 @@ async def upload_and_ingest(
         result = orchestrator.ingest_file(
             tmp_path,
             original_filename=file.filename,
+            session_id=session_id,
         )
         result["file_name"] = file.filename
         logger.info(f"Upload ingested: {file.filename} → {result}")

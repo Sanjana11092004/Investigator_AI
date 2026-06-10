@@ -23,6 +23,7 @@ class VectorRetriever:
         n_results: int = None,
         metadata_filter: Dict[str, Any] = None,
         min_similarity: float = 0.3,
+        session_id: str = None,
     ) -> List[Dict[str, Any]]:
         """
         Retrieve relevant narrative chunks for a query.
@@ -46,11 +47,22 @@ class VectorRetriever:
             logger.info("Vector store is empty — no PDF documents indexed yet")
             return []
 
+        # Per-session document scoping: if this session has uploaded its own
+        # documents, search ONLY those (isolation). Otherwise fall back to the
+        # shared/bundled corpus tagged 'global'. This stops one investigation's
+        # uploads from leaking into another's answers.
+        where = metadata_filter
+        if where is None and session_id:
+            if vector_store.has_docs_for(session_id):
+                where = {"session_id": session_id}
+            else:
+                where = {"session_id": "global"}
+
         query_embedding = embedder.embed_query(query)
         raw = vector_store.query(
             query_embedding=query_embedding,
             n_results=n_results,
-            where=metadata_filter,
+            where=where,
         )
 
         results = []

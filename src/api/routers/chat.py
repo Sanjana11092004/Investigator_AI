@@ -27,6 +27,10 @@ async def chat(
     - If no session_id, creates a new session automatically.
     - Conversation history and context persist to PostgreSQL.
     """
+    # Guard against empty / whitespace-only questions
+    if not request.question or not request.question.strip():
+        raise HTTPException(status_code=400, detail="Question cannot be empty.")
+
     lt_memory = LongTermMemory(db)
 
     # Get or create session
