@@ -22,15 +22,20 @@ class VectorRetriever:
         query: str,
         n_results: int = None,
         metadata_filter: Dict[str, Any] = None,
+        min_similarity: float = 0.3,
+        session_id: str = None,
     ) -> List[Dict[str, Any]]:
         """
         Retrieve relevant narrative chunks for a query.
-        
+
         Args:
             query: User's natural language question.
             n_results: Number of results to return.
             metadata_filter: ChromaDB metadata filter dict.
-        
+            min_similarity: Drop chunks below this cosine similarity. Pass a
+                higher value (e.g. 0.45) when vector is only a fallback for a
+                structured query, so unrelated PDF content isn't mixed in.
+
         Returns:
             List of result dicts with content, source, page, distance.
         """
@@ -42,11 +47,22 @@ class VectorRetriever:
             logger.info("Vector store is empty — no PDF documents indexed yet")
             return []
 
+        # Per-session document scoping: if this session has uploaded its own
+        # documents, search ONLY those (isolation). Otherwise fall back to the
+        # shared/bundled corpus tagged 'global'. This stops one investigation's
+        # uploads from leaking into another's answers.
+        where = metadata_filter
+        if where is None and session_id:
+            if vector_store.has_docs_for(session_id):
+                where = {"session_id": session_id}
+            else:
+                where = {"session_id": "global"}
+
         query_embedding = embedder.embed_query(query)
         raw = vector_store.query(
             query_embedding=query_embedding,
             n_results=n_results,
-            where=metadata_filter,
+            where=where,
         )
 
         results = []
@@ -59,7 +75,7 @@ class VectorRetriever:
             # Convert to similarity score 0-1
             similarity = 1 - (dist / 2)
 
-            if similarity < 0.3:  # Skip very low relevance results
+            if similarity < min_similarity:  # Skip low-relevance results
                 continue
 
             results.append({

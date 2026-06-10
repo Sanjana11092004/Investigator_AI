@@ -69,9 +69,20 @@ class RAGPipeline:
             sql_results = self.sql_retriever.retrieve(classification, question)
             logger.info(f"SQL RESULTS: {len(sql_results)}")
 
+        # Vector (PDF narrative) retrieval:
+        #  • vector/hybrid → the classifier decided narrative is relevant, use the
+        #    normal relevance floor.
+        #  • sql strategy with NO rows → fall back to the narrative store, but only
+        #    accept STRONGLY relevant chunks (≥0.45) so unrelated PDF content is
+        #    never blended into a structured answer (avoids the PDF+CSV mix-up).
+        #  • sql strategy WITH rows → do NOT pull the PDF at all.
         if strategy in ["vector", "hybrid"]:
-            vector_results = self.vector_retriever.retrieve(question)
+            vector_results = self.vector_retriever.retrieve(question, session_id=session_id)
             logger.info(f"VECTOR RESULTS: {len(vector_results)}")
+        elif not sql_results:
+            vector_results = self.vector_retriever.retrieve(
+                question, min_similarity=0.45, session_id=session_id)
+            logger.info(f"VECTOR FALLBACK RESULTS: {len(vector_results)}")
 
         all_results = sql_results + vector_results
 
@@ -130,8 +141,8 @@ class RAGPipeline:
     # Keep the evidence block small enough to fit comfortably inside the LLM
     # request budget (also conserves the daily token quota). Free-tier models
     # reject oversized requests, so we cap per-source and total length.
-    MAX_SOURCE_CHARS = 3000
-    MAX_EVIDENCE_CHARS = 3500
+    MAX_SOURCE_CHARS = 4000
+    MAX_EVIDENCE_CHARS = 4500
 
     def _format_evidence(self, results: List[Dict[str, Any]]) -> str:
         """Format retrieved results into a readable (size-bounded) evidence block."""

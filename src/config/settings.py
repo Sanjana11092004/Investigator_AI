@@ -34,7 +34,7 @@ class Settings(BaseSettings):
 
     # Retrieval
     vector_top_k: int = Field(5, env="VECTOR_TOP_K")
-    sql_max_rows: int = Field(50, env="SQL_MAX_ROWS")
+    sql_max_rows: int = Field(20, env="SQL_MAX_ROWS")
 
     # Memory
     memory_window_size: int = Field(10, env="MEMORY_WINDOW_SIZE")
