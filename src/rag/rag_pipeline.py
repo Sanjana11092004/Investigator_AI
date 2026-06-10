@@ -69,7 +69,14 @@ class RAGPipeline:
             sql_results = self.sql_retriever.retrieve(classification, question)
             logger.info(f"SQL RESULTS: {len(sql_results)}")
 
-        if strategy in ["vector", "hybrid"]:
+        # Run semantic/vector retrieval when the strategy asks for it, when the
+        # question is document-oriented, OR as a fallback when SQL found nothing —
+        # this ensures uploaded PDF / narrative content is actually retrieved.
+        doc_intent = any(kw in question.lower() for kw in [
+            "document", "report", "narrative", "pdf", "summarize", "summary",
+            "says", "mention", "according to", "describe", "note", "case study",
+        ])
+        if strategy in ["vector", "hybrid"] or doc_intent or not sql_results:
             vector_results = self.vector_retriever.retrieve(question)
             logger.info(f"VECTOR RESULTS: {len(vector_results)}")
 
@@ -130,8 +137,8 @@ class RAGPipeline:
     # Keep the evidence block small enough to fit comfortably inside the LLM
     # request budget (also conserves the daily token quota). Free-tier models
     # reject oversized requests, so we cap per-source and total length.
-    MAX_SOURCE_CHARS = 3000
-    MAX_EVIDENCE_CHARS = 3500
+    MAX_SOURCE_CHARS = 4000
+    MAX_EVIDENCE_CHARS = 4500
 
     def _format_evidence(self, results: List[Dict[str, Any]]) -> str:
         """Format retrieved results into a readable (size-bounded) evidence block."""
