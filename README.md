@@ -26,6 +26,7 @@ follow-up questions.
 - [Overview](#-overview)
 - [Key Features](#-key-features)
 - [Example Conversation](#-example-conversation)
+- [Query Capabilities](#-query-capabilities)
 - [Architecture](#️-architecture)
 - [Tech Stack](#-tech-stack)
 - [Getting Started](#-getting-started)
@@ -58,12 +59,24 @@ vector store → conversational RAG with memory → answers with cited evidence*
   JSON, and narrative PDFs, with MD5 content-based **deduplication**.
 - **🔀 Hybrid RAG** — an LLM **query classifier** routes each question to SQL retrieval,
   vector retrieval, or **both**, then synthesizes a grounded, source-cited answer.
-- **🧠 Conversational memory** — short-term sliding window + long-term PostgreSQL-backed
-  sessions; the active study/patient context is auto-extracted and reused for follow-ups.
+- **📊 Analytical & statistical queries** — exact `COUNT / AVG / MIN / MAX`, percentages,
+  group-by ("most common…"), and arg-max ("which patient has the highest AST") computed
+  **directly in SQL** — not guessed by the LLM.
+- **🧩 Query decomposition** — cross-entity questions like *"average ALT among patients
+  with serious adverse events"* are broken into cohort → metric sub-queries and answered exactly.
+- **📚 Cross-study reasoning** — keyword-matched study retrieval with summaries for
+  *"summarize / compare studies about X"*.
+- **🧠 Conversational memory** — short-term window + long-term PostgreSQL sessions; the
+  active study/patient context is auto-extracted and reused for follow-ups.
+- **🔒 Per-session document scoping** — uploaded files are scoped to their session and
+  retrieved first; one investigation's docs never leak into another's answers.
+- **🗂️ Unified JSON store** — a `FileNormalizer` + exporter normalize every source into one
+  metadata-rich JSON schema (`document_id, study_id, patient_id, section, entity_tags, …`).
+- **🛡️ RAG safety** — prompt-injection resistance (evidence is data, not instructions),
+  off-topic refusal, no PDF/CSV evidence mixing, and empty/malformed-input guards.
 - **🏷️ Clinical entity extraction** — spaCy + rule-based extraction of patients, drugs,
   adverse events, studies, lab tests, diagnoses, and outcomes.
-- **📝 Full audit trail** — every query, retrieval strategy, response, latency, and token
-  count is logged for accountability.
+- **📝 Full audit trail** — every query, retrieval strategy, response, latency, and token count logged.
 - **💬 Modern UI + REST API** — a Streamlit chat front-end backed by a documented FastAPI
   service (OpenAPI at `/docs`).
 
@@ -87,6 +100,24 @@ AI  ▸ Patients > 60 …  [SQL · patients]
 
 The assistant remembers the prior study/patient context and continues the
 investigation without the user re-stating it.
+
+---
+
+## 🔎 Query Capabilities
+
+| Category | Example | How it's answered |
+|----------|---------|-------------------|
+| **Direct retrieval** | "Show demographics for SUBJ-0007" | SQL field lookup |
+| **Aggregation** | "How many serious adverse events?" · "What % of patients are female?" | SQL `COUNT` + ratios |
+| **Statistics** | "Mean ALT value?" · "Which patient has the highest AST?" | SQL `AVG` / `MAX` + arg-max |
+| **Ranking / group-by** | "Top 5 most common adverse events" · "Most common diagnosis" | SQL `GROUP BY … ORDER BY` |
+| **Cross-entity decomposition** | "Average ALT among patients with serious AEs" | cohort sub-query → metric |
+| **Cross-study reasoning** | "Summarize studies about hepatotoxicity" | keyword study retrieval → LLM synthesis |
+| **Document-grounded QA** | "What is the patient ID in the uploaded report?" | session-scoped vector search |
+| **Multi-turn memory** | "…and which of them were fatal?" | session context carried forward |
+
+> ℹ️ *Per-arm efficacy comparisons aren't available — the source ClinicalTrials JSON
+> contains no per-arm outcome data. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).*
 
 ---
 
@@ -231,11 +262,12 @@ src/
 ├── entity_extraction/  spaCy + rule-based clinical NER
 ├── llm/                Groq client + prompt templates
 ├── memory/             short-term, long-term, context manager
-├── rag/                query classifier, SQL retriever, vector retriever, pipeline
+├── rag/                query classifier, SQL retriever (analytics + decomposition), vector retriever, pipeline
+├── json_store/         FileNormalizer + unified JSON-store exporter
 └── ui/                 Streamlit chat application
-scripts/                init_db, ingest_all
+scripts/                init_db, ingest_all, build_json_store
 alembic/                database migrations
-docs/                   setup · architecture · pipelines · data processing · tech stack
+docs/                   setup · architecture · pipelines · data processing · tech stack · json store
 tests/                  pytest suite (PostgreSQL-backed, mocked LLM)
 ```
 
