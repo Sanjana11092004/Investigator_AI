@@ -98,6 +98,28 @@ class VectorStore:
         """Return total number of chunks in the store."""
         return self.collection.count()
 
+    def get_all_for_source(self, source: str) -> Dict[str, Any]:
+        """Return every chunk (documents + metadatas) for one source file."""
+        try:
+            return self.collection.get(
+                where={"source": source},
+                include=["documents", "metadatas"],
+            )
+        except Exception:
+            return {"documents": [], "metadatas": []}
+
+    def list_sources(self) -> List[str]:
+        """Distinct document source filenames currently in the collection."""
+        try:
+            res = self.collection.get(include=["metadatas"])
+            return sorted({
+                m.get("source")
+                for m in (res.get("metadatas") or [])
+                if m.get("source")
+            })
+        except Exception:
+            return []
+
     def has_docs_for(self, session_id: str) -> bool:
         """True if any chunk was uploaded under this session id."""
         if not session_id:

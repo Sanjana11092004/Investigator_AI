@@ -59,13 +59,27 @@ class RAGPipeline:
         classification = self.classifier.classify(question, session_context)
         logger.info(f"CLASSIFICATION: {classification}")
         strategy = classification.get("strategy", "hybrid")
+
+        # 1b. If the user explicitly named an indexed document (e.g.
+        # "how many patients are in patient_narrative_001"), the question is ABOUT
+        # that document. Answer it from the document via vector search scoped to
+        # that file, and skip SQL entirely — otherwise a structured 'patients'
+        # table count (0, because the doc name isn't a patient) would contradict
+        # the document's own content (5 patients). This keeps "count" and
+        # "summarize" of the same document consistent.
+        named_doc = self.vector_retriever.find_named_document(question)
+        if named_doc:
+            strategy = "vector"
+            classification["strategy"] = "vector"
+            logger.info(f"Query names document '{named_doc}' → vector-only, scoped to that file")
+
         logger.info(f"Query strategy: {strategy}")
 
         # 2. Retrieve from appropriate sources
         sql_results = []
         vector_results = []
 
-        if strategy in ["sql", "hybrid"]:
+        if strategy in ["sql", "hybrid"] and not named_doc:
             sql_results = self.sql_retriever.retrieve(classification, question)
             logger.info(f"SQL RESULTS: {len(sql_results)}")
 
@@ -82,7 +96,20 @@ class RAGPipeline:
         # happened to return rows.
         session_has_docs = bool(session_id) and self.vector_retriever.has_session_docs(session_id)
 
-        if strategy in ["vector", "hybrid"] or session_has_docs:
+        if named_doc:
+            # Scope retrieval to the named document; pull a few more chunks than
+            # usual so count/aggregate-style questions have enough of the doc.
+            vector_results = self.vector_retriever.retrieve(
+                question, n_results=8,
+                metadata_filter={"source": named_doc}, session_id=session_id)
+            # Prepend deterministic document-level facts (true patient count, page
+            # count) so summaries/counts anchor to the WHOLE document, never to the
+            # few chunks semantic search happened to surface.
+            facts = self.vector_retriever.document_facts(named_doc)
+            if facts:
+                vector_results = [facts] + vector_results
+            logger.info(f"VECTOR RESULTS (doc-scoped to {named_doc}): {len(vector_results)} (facts={bool(facts)})")
+        elif strategy in ["vector", "hybrid"] or session_has_docs:
             vector_results = self.vector_retriever.retrieve(question, session_id=session_id)
             logger.info(f"VECTOR RESULTS: {len(vector_results)} (session_docs={session_has_docs})")
         elif not sql_results:
@@ -90,8 +117,9 @@ class RAGPipeline:
                 question, min_similarity=0.45, session_id=session_id)
             logger.info(f"VECTOR FALLBACK RESULTS: {len(vector_results)}")
 
-        # Prioritise the uploaded document's evidence when the session has one.
-        all_results = (vector_results + sql_results) if session_has_docs else (sql_results + vector_results)
+        # Prioritise the document's evidence when the session has one or the user
+        # named a specific document.
+        all_results = (vector_results + sql_results) if (session_has_docs or named_doc) else (sql_results + vector_results)
 
         # 3. Format evidence for LLM
         evidence_text = self._format_evidence(all_results)

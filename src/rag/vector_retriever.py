@@ -2,7 +2,8 @@
 Vector RAG Retriever.
 Performs semantic search over PDF narrative chunks in ChromaDB.
 """
-from typing import List, Dict, Any
+import re
+from typing import List, Dict, Any, Optional
 
 from loguru import logger
 
@@ -16,6 +17,73 @@ class VectorRetriever:
     Semantic search over PDF narrative documents.
     Returns relevant text chunks with source metadata.
     """
+
+    @staticmethod
+    def _normalize_name(s: str) -> str:
+        """Lowercase and strip every non-alphanumeric char, so 'patient narrative 001',
+        'patient_narrative_001' and 'PATIENT-NARRATIVE-001' all compare equal."""
+        return re.sub(r'[^a-z0-9]', '', (s or '').lower())
+
+    def find_named_document(self, query: str) -> Optional[str]:
+        """If the query explicitly names an indexed document, return that document's
+        source filename; otherwise None.
+
+        Only identifier-like names (containing a digit, '_' or '-') are matched, so
+        plain words such as 'patients' never accidentally scope to a document.
+        Matching is case- and separator-insensitive and picks the longest match.
+        """
+        try:
+            sources = get_vector_store().list_sources()
+        except Exception:
+            return None
+        if not sources:
+            return None
+
+        norm_q = self._normalize_name(query)
+        best, best_len = None, 0
+        for src in sources:
+            base = src.rsplit(".", 1)[0]            # drop extension
+            # Require an identifier-like name to avoid matching common words.
+            if not any(ch.isdigit() or ch in "_-" for ch in base):
+                continue
+            norm_b = self._normalize_name(base)
+            if len(norm_b) >= 6 and norm_b in norm_q and len(norm_b) > best_len:
+                best, best_len = src, len(norm_b)
+        return best
+
+    def document_facts(self, source: str) -> Optional[Dict[str, Any]]:
+        """Compute deterministic, document-level facts (true patient count, page
+        count) from ALL chunks of a document — not just the handful semantic search
+        returns. Injected as authoritative evidence so a summary can never undercount
+        (e.g. report '5 patients' when the document actually describes 50)."""
+        data = get_vector_store().get_all_for_source(source)
+        docs = data.get("documents") or []
+        metas = data.get("metadatas") or []
+        if not docs:
+            return None
+
+        full = "\n".join(docs)
+        facts = []
+
+        # Distinct patient identifiers (PAT-1, PAT-50, SUBJ-0001, …) across the doc.
+        ids = {i.upper() for i in re.findall(r'\b(?:PAT|SUBJ)-?\d+\b', full, re.I)}
+        # An explicit "Total Records: N" / "Total Patients: N" header is the most
+        # authoritative figure when present; otherwise fall back to distinct IDs.
+        m = re.search(r'total\s+(?:records|patients)[:\s]+(\d+)', full, re.I)
+        total = int(m.group(1)) if m else (len(ids) or None)
+        if total:
+            facts.append(f"Total patient records described in this document: **{total}**")
+
+        pages = [me.get("page") for me in metas if isinstance(me.get("page"), int)]
+        if pages:
+            facts.append(f"Document length: {max(pages)} pages")
+
+        if not facts:
+            return None
+        content = ("**Document facts (computed directly from the FULL document — "
+                   "authoritative, use these exact figures):**\n"
+                   + "\n".join(f"- {f}" for f in facts))
+        return {"content": content, "source": f"{source} (document index)", "type": "vector"}
 
     def has_session_docs(self, session_id: str) -> bool:
         """True if this session has uploaded its own document(s)."""

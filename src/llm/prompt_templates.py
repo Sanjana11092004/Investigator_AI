@@ -50,6 +50,8 @@ Instructions:
 - Do not infer database values from conversation history.
 - Do not answer patient-specific questions unless patient information appears in retrieved evidence.
 - Do not estimate counts.
+- The retrieved narrative chunks are only a PARTIAL SAMPLE of the document, not the whole thing. Never state a total (e.g. number of patients) by counting how many appear in the chunks shown.
+- When the evidence contains a "Document facts" block (computed from the FULL document), those figures — total patient count, page count, etc. — are AUTHORITATIVE. Use those exact numbers for any total/count, and keep every part of your answer consistent with them. If you describe individual patients from the sample, make clear they are examples from a larger set (e.g. "Here are a few of the 50 patients...").
 """
 
 ENTITY_EXTRACTION_PROMPT = """Extract all clinical entities from the following text.

@@ -24,9 +24,11 @@ class QueryClassifier:
     """
 
     # Matches: SUBJ-0001, SUBJ001, PAT-1, PAT001, API-DM-001, DM-001
-    # Requires at least one digit so plain words like "patients" are never captured.
+    # The digit must follow the prefix (after an optional -/_ separator) with NO
+    # letters in between, so plain words like "patient" and document names like
+    # "patient_narrative_001" are never captured as a patient ID.
     _PATIENT_ID_RE = re.compile(
-        r'\b(?:SUBJ|PAT|API[-_]?DM|DM)[-_]?\w*\d\w*\b',
+        r'\b(?:SUBJ|PAT|API[-_]?DM|DM)[-_]?\d\w*\b',
         re.IGNORECASE,
     )
 
