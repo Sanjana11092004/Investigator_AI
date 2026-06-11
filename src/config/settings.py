@@ -11,6 +11,9 @@ class Settings(BaseSettings):
     # Groq LLM
     groq_api_key: str = Field(..., env="GROQ_API_KEY")
     groq_model: str = Field("llama-3.3-70b-versatile", env="GROQ_MODEL")
+    # Cheaper/faster model for the many per-chunk structured-extraction calls,
+    # so document structuring doesn't burn the larger model's daily quota.
+    groq_extraction_model: str = Field("llama-3.1-8b-instant", env="GROQ_EXTRACTION_MODEL")
     groq_max_tokens: int = Field(2048, env="GROQ_MAX_TOKENS")
     groq_temperature: float = Field(0.1, env="GROQ_TEMPERATURE")
 
@@ -28,13 +31,24 @@ class Settings(BaseSettings):
     )
     embedding_cache_dir: str = Field("./embedding_cache", env="EMBEDDING_CACHE_DIR")
 
-    # Chunking
-    chunk_size: int = Field(512, env="CHUNK_SIZE")
-    chunk_overlap: int = Field(64, env="CHUNK_OVERLAP")
+    # Chunking — larger chunks keep each patient narrative intact (less
+    # fragmentation = higher answer accuracy on large documents).
+    chunk_size: int = Field(1200, env="CHUNK_SIZE")
+    chunk_overlap: int = Field(200, env="CHUNK_OVERLAP")
 
-    # Retrieval
-    vector_top_k: int = Field(5, env="VECTOR_TOP_K")
+    # Retrieval — retrieve more chunks so answers on large corpora see enough
+    # evidence instead of a thin 5-chunk slice.
+    vector_top_k: int = Field(12, env="VECTOR_TOP_K")
     sql_max_rows: int = Field(20, env="SQL_MAX_ROWS")
+
+    # Document structuring (json-converter): extract patients/study fields from
+    # narrative PDFs into a per-document structured JSON so factual/aggregate
+    # questions are answered exactly, not approximately.
+    pdf_structured_extraction: bool = Field(True, env="PDF_STRUCTURED_EXTRACTION")
+    json_store_dir: str = Field("./json_store", env="JSON_STORE_DIR")
+    # Chunk size used for LLM extraction (bigger than the embedding chunk so each
+    # call sees a whole patient record; fewer calls = less quota).
+    extraction_chunk_size: int = Field(9000, env="EXTRACTION_CHUNK_SIZE")
 
     # Memory
     memory_window_size: int = Field(10, env="MEMORY_WINDOW_SIZE")

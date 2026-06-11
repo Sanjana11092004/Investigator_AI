@@ -145,6 +145,37 @@ Return ONLY valid JSON, no markdown, no extra text:
 {{"strategy": "sql|vector|hybrid", "sql_entities": ["only tables actually needed — patients/lab_results/medications/medical_history/adverse_events/studies"], "filters": {{"study_id": null, "patient_id": null, "age_filter": null, "severity": null, "serious_only": false}}, "search_terms": ["key terms for vector search only"]}}
 """
 
+CHUNK_NORMALIZE_PROMPT = """You are a clinical data extraction engine. Extract STRUCTURED data from the
+clinical narrative text below and return it as a single JSON object.
+
+Rules:
+- Return ONLY valid JSON. No markdown, no commentary, no code fences.
+- Use exactly these top-level keys (omit a key if there is nothing for it):
+  {{
+    "study_id": "<study/protocol id if stated, else null>",
+    "study_title": "<title if stated, else null>",
+    "patients": [
+      {{
+        "patient_id": "<the patient/subject identifier exactly as written, e.g. PAT-1, SUBJ-0001>",
+        "age": <number or null>,
+        "sex": "<M/F/other or null>",
+        "diagnosis": "<primary diagnosis/condition or null>",
+        "medications": ["<drug names mentioned for this patient>"],
+        "adverse_events": ["<adverse events / reactions for this patient>"],
+        "summary": "<one-sentence summary of this patient's narrative>"
+      }}
+    ]
+  }}
+- Only include a patient if the text actually describes that patient. Do NOT invent patients or fields.
+- If a field is unknown, use null (or [] for lists). Never guess values.
+- Capture the patient_id verbatim — it is the key used to merge data split across pages.
+
+=== NARRATIVE TEXT ===
+{text}
+
+JSON:
+"""
+
 SUMMARY_PROMPT = """Summarize this investigation session in 2-3 sentences for context injection.
 
 Session history:

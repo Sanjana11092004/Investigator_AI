@@ -97,18 +97,25 @@ class RAGPipeline:
         session_has_docs = bool(session_id) and self.vector_retriever.has_session_docs(session_id)
 
         if named_doc:
-            # Scope retrieval to the named document; pull a few more chunks than
-            # usual so count/aggregate-style questions have enough of the doc.
+            # Scope retrieval to the named document.
             vector_results = self.vector_retriever.retrieve(
-                question, n_results=8,
-                metadata_filter={"source": named_doc}, session_id=session_id)
+                question, metadata_filter={"source": named_doc}, session_id=session_id)
             # Prepend deterministic document-level facts (true patient count, page
             # count) so summaries/counts anchor to the WHOLE document, never to the
             # few chunks semantic search happened to surface.
             facts = self.vector_retriever.document_facts(named_doc)
-            if facts:
-                vector_results = [facts] + vector_results
-            logger.info(f"VECTOR RESULTS (doc-scoped to {named_doc}): {len(vector_results)} (facts={bool(facts)})")
+            # Add exact structured records for any patient IDs named in the query
+            # (e.g. "medications for PAT-7") — these carry fields the retrieved
+            # narrative chunks may miss.
+            struct_recs = []
+            try:
+                from src.ingestion.pdf_structurer import PDFStructurer
+                struct_recs = PDFStructurer.patient_evidence_for_query(named_doc, question)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"structured patient lookup failed (non-fatal): {e}")
+            vector_results = ([facts] if facts else []) + struct_recs + vector_results
+            logger.info(f"VECTOR RESULTS (doc-scoped to {named_doc}): {len(vector_results)} "
+                        f"(facts={bool(facts)}, structured_recs={len(struct_recs)})")
         elif strategy in ["vector", "hybrid"] or session_has_docs:
             vector_results = self.vector_retriever.retrieve(question, session_id=session_id)
             logger.info(f"VECTOR RESULTS: {len(vector_results)} (session_docs={session_has_docs})")
@@ -176,8 +183,8 @@ class RAGPipeline:
     # Keep the evidence block small enough to fit comfortably inside the LLM
     # request budget (also conserves the daily token quota). Free-tier models
     # reject oversized requests, so we cap per-source and total length.
-    MAX_SOURCE_CHARS = 4000
-    MAX_EVIDENCE_CHARS = 4500
+    MAX_SOURCE_CHARS = 6000
+    MAX_EVIDENCE_CHARS = 14000
 
     def _format_evidence(self, results: List[Dict[str, Any]]) -> str:
         """Format retrieved results into a readable (size-bounded) evidence block."""

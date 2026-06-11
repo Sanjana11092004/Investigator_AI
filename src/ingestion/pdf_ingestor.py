@@ -20,6 +20,7 @@ from src.ingestion.deduplication import (
 from src.embeddings.chunker import chunk_text
 from src.embeddings.embedder import get_embedder
 from src.vector_store.chroma_store import get_vector_store
+from src.config.settings import settings
 
 
 class PDFIngestor(BaseIngestor):
@@ -100,9 +101,24 @@ class PDFIngestor(BaseIngestor):
         )
 
         logger.info(f"PDF ingestor: {len(all_chunks)} chunks from {file_name} ({len(text_pages)} pages)")
+
+        # Structured extraction (json-converter): build a per-document structured
+        # JSON so factual/aggregate questions are answered EXACTLY. Best-effort —
+        # never block ingestion if the LLM quota is exhausted or a chunk fails.
+        structured_patients = None
+        if settings.pdf_structured_extraction:
+            try:
+                from src.ingestion.pdf_structurer import PDFStructurer
+                struct = PDFStructurer().structure_and_save(file_path, source_name=file_name)
+                structured_patients = struct.get("patient_count")
+                logger.info(f"PDF structurer: {structured_patients} patients extracted from {file_name}")
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"PDF structuring failed (non-fatal) for {file_name}: {e}")
+
         return {
             "success": True,
             "records": len(all_chunks),
+            "structured_patients": structured_patients,
             "message": f"Indexed {len(all_chunks)} chunks from {len(text_pages)} pages",
         }
 

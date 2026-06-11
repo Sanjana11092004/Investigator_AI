@@ -52,27 +52,43 @@ class VectorRetriever:
         return best
 
     def document_facts(self, source: str) -> Optional[Dict[str, Any]]:
-        """Compute deterministic, document-level facts (true patient count, page
-        count) from ALL chunks of a document — not just the handful semantic search
-        returns. Injected as authoritative evidence so a summary can never undercount
-        (e.g. report '5 patients' when the document actually describes 50)."""
+        """Authoritative, document-level facts (true patient count, page count) so a
+        summary/count can never undercount from the handful of chunks semantic
+        search returns.
+
+        Prefers the STRUCTURED extraction (json-converter output) when present —
+        that's an exact, merged-by-ID patient count. Falls back to a regex scan of
+        all chunks when the document hasn't been structured yet."""
+        facts: list[str] = []
+        total = None
+
+        # 1. Exact count from the structured per-document JSON, if available.
+        try:
+            from src.ingestion.pdf_structurer import PDFStructurer
+            structured = PDFStructurer.load(source)
+        except Exception:
+            structured = None
+        if structured and structured.get("patient_count"):
+            total = structured["patient_count"]
+            facts.append(f"Total patients described in this document: **{total}** "
+                         f"(exact, from structured extraction)")
+            if structured.get("study_id"):
+                facts.append(f"Study: {structured['study_id']}")
+
+        # 2. Page count + regex fallback for the patient count, from the chunks.
         data = get_vector_store().get_all_for_source(source)
         docs = data.get("documents") or []
         metas = data.get("metadatas") or []
-        if not docs:
+        if not docs and total is None:
             return None
 
-        full = "\n".join(docs)
-        facts = []
-
-        # Distinct patient identifiers (PAT-1, PAT-50, SUBJ-0001, …) across the doc.
-        ids = {i.upper() for i in re.findall(r'\b(?:PAT|SUBJ)-?\d+\b', full, re.I)}
-        # An explicit "Total Records: N" / "Total Patients: N" header is the most
-        # authoritative figure when present; otherwise fall back to distinct IDs.
-        m = re.search(r'total\s+(?:records|patients)[:\s]+(\d+)', full, re.I)
-        total = int(m.group(1)) if m else (len(ids) or None)
-        if total:
-            facts.append(f"Total patient records described in this document: **{total}**")
+        if total is None:
+            full = "\n".join(docs)
+            ids = {i.upper() for i in re.findall(r'\b(?:PAT|SUBJ)-?\d+\b', full, re.I)}
+            m = re.search(r'total\s+(?:records|patients)[:\s]+(\d+)', full, re.I)
+            total = int(m.group(1)) if m else (len(ids) or None)
+            if total:
+                facts.append(f"Total patient records described in this document: **{total}**")
 
         pages = [me.get("page") for me in metas if isinstance(me.get("page"), int)]
         if pages:
@@ -80,8 +96,7 @@ class VectorRetriever:
 
         if not facts:
             return None
-        content = ("**Document facts (computed directly from the FULL document — "
-                   "authoritative, use these exact figures):**\n"
+        content = ("**Document facts (authoritative — use these exact figures):**\n"
                    + "\n".join(f"- {f}" for f in facts))
         return {"content": content, "source": f"{source} (document index)", "type": "vector"}
 
