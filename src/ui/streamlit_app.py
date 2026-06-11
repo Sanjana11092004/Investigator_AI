@@ -417,6 +417,15 @@ def render_sidebar(backend_ok: bool):
                     st.info(f"ℹ️ {res.get('message', 'Already ingested.')}")
                 else:
                     st.success(f"✅ {res['records']} records from {up.name}")
+                    # Surface any ingestor-specific extras generically (e.g. a PDF's
+                    # structured_patients). New file types appear here automatically.
+                    details = res.get("details") or {}
+                    if details.get("structured_patients"):
+                        st.caption(f"🧬 {details['structured_patients']} patients structured for exact lookups")
+                    for k, v in details.items():
+                        if k == "structured_patients" or v in (None, "", [], {}):
+                            continue
+                        st.caption(f"• {k.replace('_', ' ')}: {v}")
             else:
                 st.error(f"❌ {res.get('message', 'Ingestion failed')}")
 

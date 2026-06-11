@@ -64,7 +64,9 @@ async def upload_and_ingest(
         )
         result["file_name"] = file.filename
         logger.info(f"Upload ingested: {file.filename} → {result}")
-        return IngestResponse(**result)
+        # from_result routes any ingestor-specific keys (structured_patients, …)
+        # into `details`, so new file types never need a schema/route change here.
+        return IngestResponse.from_result(result)
     except Exception as e:
         logger.error(f"Upload ingestion error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
