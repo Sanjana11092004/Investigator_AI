@@ -120,6 +120,20 @@ class VectorStore:
         except Exception:
             return []
 
+    def sources_for_session(self, session_id: str) -> List[str]:
+        """Distinct source filenames uploaded under a given session id."""
+        if not session_id:
+            return []
+        try:
+            res = self.collection.get(where={"session_id": session_id}, include=["metadatas"])
+            return sorted({
+                m.get("source")
+                for m in (res.get("metadatas") or [])
+                if m.get("source")
+            })
+        except Exception:
+            return []
+
     def has_docs_for(self, session_id: str) -> bool:
         """True if any chunk was uploaded under this session id."""
         if not session_id:

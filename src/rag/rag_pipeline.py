@@ -75,58 +75,55 @@ class RAGPipeline:
 
         logger.info(f"Query strategy: {strategy}")
 
+        # If THIS session uploaded its own document(s), the question is about that
+        # upload — answer from it and NOT from the shared SDTM/demo database. We
+        # treat it exactly like a named-document query: skip SQL, scope retrieval
+        # to the session. (The DB cohort leaking into uploaded-file answers was the
+        # reported bug.)
+        session_has_docs = bool(session_id) and self.vector_retriever.has_session_docs(session_id)
+        session_sources = (self.vector_retriever.session_document_sources(session_id)
+                           if session_has_docs and not named_doc else [])
+        doc_scoped = bool(named_doc) or bool(session_sources)
+        if doc_scoped:
+            strategy = "vector"   # reported retrieval type; SQL is intentionally skipped
+
         # 2. Retrieve from appropriate sources
         sql_results = []
         vector_results = []
 
-        if strategy in ["sql", "hybrid"] and not named_doc:
+        if strategy in ["sql", "hybrid"] and not doc_scoped:
             sql_results = self.sql_retriever.retrieve(classification, question)
             logger.info(f"SQL RESULTS: {len(sql_results)}")
 
-        # Vector (PDF narrative) retrieval:
-        #  • vector/hybrid → the classifier decided narrative is relevant, use the
-        #    normal relevance floor.
-        #  • sql strategy with NO rows → fall back to the narrative store, but only
-        #    accept STRONGLY relevant chunks (≥0.45) so unrelated PDF content is
-        #    never blended into a structured answer (avoids the PDF+CSV mix-up).
-        #  • sql strategy WITH rows → do NOT pull the PDF at all.
-        # If THIS session uploaded its own document(s), always search them and
-        # prioritise them — so a question about an uploaded file is answered from
-        # that file even when the classifier chose the 'sql' strategy and SQL
-        # happened to return rows.
-        session_has_docs = bool(session_id) and self.vector_retriever.has_session_docs(session_id)
-
+        # Vector (PDF narrative) retrieval, in priority order:
+        #  • named document      → scope to that file.
+        #  • session's own upload → scope to the session's file(s).
+        #  • vector/hybrid        → semantic search at the normal relevance floor.
+        #  • sql with NO rows     → narrative fallback, but only STRONGLY relevant
+        #    chunks (≥0.45) so unrelated PDF content isn't blended into a structured
+        #    answer; sql WITH rows → do not pull the PDF.
         if named_doc:
             # Scope retrieval to the named document.
             vector_results = self.vector_retriever.retrieve(
                 question, metadata_filter={"source": named_doc}, session_id=session_id)
-            # Prepend deterministic document-level facts (true patient count, page
-            # count) so summaries/counts anchor to the WHOLE document, never to the
-            # few chunks semantic search happened to surface.
-            facts = self.vector_retriever.document_facts(named_doc)
-            # Add exact structured records for any patient IDs named in the query
-            # (e.g. "medications for PAT-7") — these carry fields the retrieved
-            # narrative chunks may miss.
-            struct_recs = []
-            try:
-                from src.ingestion.pdf_structurer import PDFStructurer
-                struct_recs = PDFStructurer.patient_evidence_for_query(named_doc, question)
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"structured patient lookup failed (non-fatal): {e}")
-            vector_results = ([facts] if facts else []) + struct_recs + vector_results
-            logger.info(f"VECTOR RESULTS (doc-scoped to {named_doc}): {len(vector_results)} "
-                        f"(facts={bool(facts)}, structured_recs={len(struct_recs)})")
-        elif strategy in ["vector", "hybrid"] or session_has_docs:
+            vector_results = self._document_evidence([named_doc], question) + vector_results
+            logger.info(f"VECTOR RESULTS (named doc {named_doc}): {len(vector_results)}")
+        elif session_sources:
+            # This session uploaded its OWN file(s): answer from them, scoped to the
+            # session (SQL was skipped above), so the shared DB cohort can't leak in.
             vector_results = self.vector_retriever.retrieve(question, session_id=session_id)
-            logger.info(f"VECTOR RESULTS: {len(vector_results)} (session_docs={session_has_docs})")
+            vector_results = self._document_evidence(session_sources, question) + vector_results
+            logger.info(f"VECTOR RESULTS (session docs {session_sources}): {len(vector_results)}")
+        elif strategy in ["vector", "hybrid"]:
+            vector_results = self.vector_retriever.retrieve(question, session_id=session_id)
+            logger.info(f"VECTOR RESULTS: {len(vector_results)}")
         elif not sql_results:
             vector_results = self.vector_retriever.retrieve(
                 question, min_similarity=0.45, session_id=session_id)
             logger.info(f"VECTOR FALLBACK RESULTS: {len(vector_results)}")
 
-        # Prioritise the document's evidence when the session has one or the user
-        # named a specific document.
-        all_results = (vector_results + sql_results) if (session_has_docs or named_doc) else (sql_results + vector_results)
+        # Document evidence leads when the query is scoped to a document.
+        all_results = (vector_results + sql_results) if doc_scoped else (sql_results + vector_results)
 
         # 3. Format evidence for LLM
         evidence_text = self._format_evidence(all_results)
@@ -185,6 +182,28 @@ class RAGPipeline:
     # reject oversized requests, so we cap per-source and total length.
     MAX_SOURCE_CHARS = 6000
     MAX_EVIDENCE_CHARS = 14000
+
+    def _document_evidence(self, sources: List[str], question: str) -> List[Dict[str, Any]]:
+        """Authoritative, exact evidence for the given document source(s):
+        document-level facts (true patient count, page count) plus structured
+        records for any patient IDs named in the question. Prepended ahead of the
+        semantically-retrieved chunks so counts/lookups don't depend on which few
+        chunks search happened to surface."""
+        out: List[Dict[str, Any]] = []
+        try:
+            from src.ingestion.pdf_structurer import PDFStructurer
+        except Exception:  # noqa: BLE001
+            PDFStructurer = None
+        for src in sources:
+            facts = self.vector_retriever.document_facts(src)
+            if facts:
+                out.append(facts)
+            if PDFStructurer is not None:
+                try:
+                    out.extend(PDFStructurer.patient_evidence_for_query(src, question))
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"structured patient lookup failed (non-fatal) for {src}: {e}")
+        return out
 
     def _format_evidence(self, results: List[Dict[str, Any]]) -> str:
         """Format retrieved results into a readable (size-bounded) evidence block."""

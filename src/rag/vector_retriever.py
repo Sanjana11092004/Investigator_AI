@@ -109,6 +109,15 @@ class VectorRetriever:
         except Exception:
             return False
 
+    def session_document_sources(self, session_id: str) -> List[str]:
+        """Source filenames this session uploaded (for facts/structured lookup)."""
+        if not session_id:
+            return []
+        try:
+            return get_vector_store().sources_for_session(session_id)
+        except Exception:
+            return []
+
     def retrieve(
         self,
         query: str,
