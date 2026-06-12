@@ -22,18 +22,11 @@ langchain==0.3.7
 langchain-community==0.3.7
 langchain-groq==0.2.0
 
-# --- Embeddings (local, free) ---
-sentence-transformers==3.2.1
-# torch==2.4.1
-transformers==4.45.2
-onnxruntime==1.19.2
-
-# --- Vector Database ---
-chromadb==0.5.15
-
-# --- Relational Database ---
+# --- Database / Catalog (SQLite via stdlib + SQLAlchemy ORM) ---
+# No DB server, no vector store: structured tables + an FTS5 narrative catalog
+# live in one local .sqlite file.
+# (Removed: chromadb, sentence-transformers, transformers, onnxruntime, psycopg2.)
 sqlalchemy==2.0.35
-psycopg2-binary==2.9.10
 alembic==1.13.3
 
 # --- NLP / Entity Extraction ---

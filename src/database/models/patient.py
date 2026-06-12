@@ -3,17 +3,16 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import Column, String, DateTime, Float, Integer, ForeignKey, Text
-from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
-from src.database.models.base import Base
+from src.database.models.base import Base, GUID
 
 
 class Patient(Base):
     __tablename__ = "patients"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    study_id = Column(UUID(as_uuid=True), ForeignKey("clinical_studies.id"), nullable=True)
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    study_id = Column(GUID(), ForeignKey("clinical_studies.id"), nullable=True)
 
     # Core SDTM identifiers
     usubjid   = Column(String(100), unique=True, nullable=False, index=True)  # e.g. SUBJ-0042

@@ -11,7 +11,7 @@ from loguru import logger
 
 from src.rag.query_classifier import QueryClassifier
 from src.rag.sql_retriever import SQLRetriever
-from src.rag.vector_retriever import VectorRetriever
+from src.catalog.catalog_retriever import CatalogRetriever
 from src.llm.groq_client import GroqClient
 from src.llm.prompt_templates import SYSTEM_PROMPT, RAG_PROMPT
 from src.entity_extraction.extractor import EntityExtractor
@@ -30,7 +30,9 @@ class RAGPipeline:
         self.db = db
         self.classifier = QueryClassifier()
         self.sql_retriever = SQLRetriever(db)
-        self.vector_retriever = VectorRetriever()
+        # Catalog lookup (SQLite FTS); kept as `vector_retriever` attribute name
+        # so the retrieval logic below is unchanged — it's the same interface.
+        self.vector_retriever = CatalogRetriever()
         self.llm = GroqClient()
         self.entity_extractor = EntityExtractor()
 

@@ -3,9 +3,8 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import Column, String, DateTime, Text, JSON
-from sqlalchemy.dialects.postgresql import UUID
 
-from src.database.models.base import Base
+from src.database.models.base import Base, GUID
 
 
 class InvestigationSession(Base):
@@ -15,7 +14,7 @@ class InvestigationSession(Base):
     """
     __tablename__ = "investigation_sessions"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
     session_name = Column(String(500), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

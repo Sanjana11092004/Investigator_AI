@@ -11,8 +11,7 @@ follow-up questions.
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white)
 ![Streamlit](https://img.shields.io/badge/Streamlit-1.39-FF4B4B?logo=streamlit&logoColor=white)
-![PostgreSQL](https://img.shields.io/badge/PostgreSQL-18-4169E1?logo=postgresql&logoColor=white)
-![ChromaDB](https://img.shields.io/badge/Vector%20DB-ChromaDB-FF6F61)
+![SQLite](https://img.shields.io/badge/SQLite-FTS5%20catalog-003B57?logo=sqlite&logoColor=white)
 ![Groq](https://img.shields.io/badge/LLM-Groq%20Llama%203.x-F55036)
 ![Tests](https://img.shields.io/badge/tests-65%20passing-brightgreen)
 ![Code style](https://img.shields.io/badge/code%20style-black-000000)
@@ -43,10 +42,11 @@ follow-up questions.
 ## 🎯 Overview
 
 **Investigator AI** lets analysts upload clinical-trial reports, adverse-event datasets,
-and medical narratives, then *talk to the data*. It combines **structured retrieval**
-(SQL over PostgreSQL) with **semantic retrieval** (vector search over document
-embeddings in ChromaDB), and synthesizes answers with a Groq-hosted Llama model —
-while persisting the conversation so follow-up questions don't need to repeat context.
+and medical narratives, then *talk to the data*. It combines a **deterministic
+aggregate engine** (exact counts/stats over structured SQLite tables) with **catalog
+lookup** (SQLite FTS5 full-text search over narrative chunks) — no database server and
+no vector store — and synthesizes answers with a Groq-hosted Llama model, grounded in
+JSON, while persisting the conversation so follow-up questions don't repeat context.
 
 It implements the full document-intelligence loop: **upload → extract → chunk + embed →
 vector store → conversational RAG with memory → answers with cited evidence**.
@@ -163,10 +163,9 @@ Detailed write-ups: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** ·
 |-------|------------|
 | **Frontend** | Streamlit |
 | **Backend** | FastAPI · Uvicorn · Pydantic v2 |
-| **LLM** | Groq — `llama-3.1-8b-instant` / `llama-3.3-70b-versatile` |
-| **Embeddings** | sentence-transformers `all-MiniLM-L6-v2` (local, CPU, free) |
-| **Vector store** | ChromaDB (persistent, cosine) |
-| **Relational DB** | PostgreSQL · SQLAlchemy 2 · Alembic |
+| **LLM** | Groq — `llama-3.1-8b-instant` (extraction) / `llama-3.3-70b-versatile` (synthesis) |
+| **Catalog lookup** | SQLite FTS5 full-text search (bm25) — no vector store, no embeddings |
+| **Data store** | JSON store (versioned envelopes) + SQLite (structured tables + FTS) · SQLAlchemy 2 |
 | **NLP** | spaCy `en_core_web_sm` (scispaCy optional) |
 | **Document parsing** | PyMuPDF · pandas |
 | **Testing** | pytest · pytest-asyncio · pytest-cov |
@@ -178,9 +177,9 @@ Full list with versions & rationale: **[docs/TECH_STACK.md](docs/TECH_STACK.md)*
 ## 🚀 Getting Started
 
 ### Prerequisites
-- **Python 3.12** (the pinned ML stack targets 3.12)
-- **PostgreSQL 14+** running on `localhost:5432`
+- **Python 3.12** (the pinned stack targets 3.12)
 - A free **Groq API key** — <https://console.groq.com>
+- No database server required — the catalog is a local **SQLite** file.
 
 ### 1 · Install
 ```bash
@@ -194,15 +193,13 @@ py -3.12 -m venv venv
 ```bash
 cp .env.template .env      # then edit:
 #   GROQ_API_KEY=...
-#   DATABASE_URL=postgresql://postgres:<pw>@localhost:5432/investigator_ai
-#   TEST_DATABASE_URL=postgresql://postgres:<pw>@localhost:5432/investigator_ai_test
+#   DATABASE_URL=sqlite:///./investigator_ai.db
+#   TEST_DATABASE_URL=sqlite:///./investigator_ai_test.db
 ```
 
 ### 3 · Create the database
 ```bash
-psql -U postgres -c "CREATE DATABASE investigator_ai;"
-psql -U postgres -c "CREATE DATABASE investigator_ai_test;"
-.\venv\Scripts\python.exe -m alembic upgrade head
+.\venv\Scripts\python.exe scripts\init_db.py   # creates the SQLite schema
 ```
 
 ### 4 · Load data & run
@@ -256,19 +253,18 @@ src/
 ├── api/                FastAPI app, routers (chat, ingest, sessions, audit, stats), schemas
 ├── config/             Pydantic settings (env-driven)
 ├── database/           SQLAlchemy models + connection
-├── ingestion/          SDTM / ClinicalTrials JSON / PDF ingestors + orchestrator + dedup
-├── embeddings/         sentence-transformers embedder, chunker, disk cache
-├── vector_store/       ChromaDB wrapper
+├── ingestion/          SDTM / ClinicalTrials JSON / PDF ingestors + orchestrator + dedup + structurer
+├── embeddings/         chunker (sliding-window text splitter)
+├── catalog/            SQLite FTS5 catalog store + catalog retriever (scoped full-text lookup)
 ├── entity_extraction/  spaCy + rule-based clinical NER
 ├── llm/                Groq client + prompt templates
 ├── memory/             short-term, long-term, context manager
-├── rag/                query classifier, SQL retriever (analytics + decomposition), vector retriever, pipeline
-├── json_store/         FileNormalizer + unified JSON-store exporter
+├── rag/                query classifier, SQL aggregate engine (analytics + decomposition), pipeline
+├── json_store/         FileNormalizer + unified JSON-store exporter (versioned envelopes)
 └── ui/                 Streamlit chat application
-scripts/                init_db, ingest_all, build_json_store
-alembic/                database migrations
+scripts/                init_db, ingest_all, build_json_store, reindex_pdf
 docs/                   setup · architecture · pipelines · data processing · tech stack · json store
-tests/                  pytest suite (PostgreSQL-backed, mocked LLM)
+tests/                  pytest suite (SQLite-backed, mocked LLM)
 ```
 
 ---

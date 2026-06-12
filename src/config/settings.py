@@ -21,16 +21,6 @@ class Settings(BaseSettings):
     database_url: str = Field(..., env="DATABASE_URL")
     test_database_url: Optional[str] = Field(None, env="TEST_DATABASE_URL") 
 
-    # ChromaDB
-    chroma_persist_dir: str = Field("./chroma_db", env="CHROMA_PERSIST_DIR")
-    chroma_collection_name: str = Field("investigator_docs", env="CHROMA_COLLECTION_NAME")
-
-    # Embeddings
-    embedding_model: str = Field(
-        "sentence-transformers/all-MiniLM-L6-v2", env="EMBEDDING_MODEL"
-    )
-    embedding_cache_dir: str = Field("./embedding_cache", env="EMBEDDING_CACHE_DIR")
-
     # Chunking — larger chunks keep each patient narrative intact (less
     # fragmentation = higher answer accuracy on large documents).
     chunk_size: int = Field(1200, env="CHUNK_SIZE")

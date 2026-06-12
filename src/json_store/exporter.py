@@ -26,7 +26,7 @@ from src.database.models.lab_result import LabResult
 from src.database.models.medication import ConcomitantMedication
 from src.database.models.medical_history import MedicalHistory
 from src.database.models.study import ClinicalStudy
-from src.vector_store.chroma_store import get_vector_store
+from src.catalog.catalog_store import get_catalog_store
 
 
 def _now() -> str:
@@ -177,27 +177,23 @@ class JSONStoreExporter:
         return out
 
     def _narratives(self):
-        """Read the PDF narrative chunks back out of the vector store."""
+        """Read the PDF narrative chunks back out of the SQLite FTS catalog."""
         out = []
         try:
-            col = get_vector_store().collection
-            data = col.get(include=["documents", "metadatas"])
+            chunks = get_catalog_store().all_chunks()
         except Exception as e:
-            logger.warning(f"json_store: could not read vector store: {e}")
+            logger.warning(f"json_store: could not read catalog: {e}")
             return out
-        for cid, text, meta in zip(data.get("ids", []),
-                                   data.get("documents", []),
-                                   data.get("metadatas", [])):
-            meta = meta or {}
+        for c in chunks:
             out.append(self._record(
-                document_id=f"narrative::{cid}",
-                source_file=meta.get("source", "unknown.pdf"),
+                document_id=f"narrative::{c.get('chunk_id')}",
+                source_file=c.get("source", "unknown.pdf"),
                 section_name="narrative",
-                page_number=meta.get("page"),
-                entity_tags=[meta.get("doc_type")],
+                page_number=c.get("page"),
+                entity_tags=[c.get("doc_type")],
                 relationships=[{"type": "scoped_to_session",
-                                "target": meta.get("session_id", "global")}],
-                content={"text": text, "chunk_index": meta.get("chunk_index"),
-                         "file_hash": meta.get("file_hash")},
+                                "target": c.get("session_id", "global")}],
+                content={"text": c.get("content"), "chunk_index": c.get("chunk_index"),
+                         "file_hash": c.get("file_hash")},
             ))
         return out

@@ -1,29 +1,26 @@
 """
-Run once to initialize the database.
-Creates all tables via Alembic and confirms structure.
+Initialize the database schema.
+
+Creates all tables directly from the SQLAlchemy models via
+Base.metadata.create_all — works on SQLite (the project's catalog store) with
+no migration tooling required.
 """
-import subprocess
 import sys
 import os
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from loguru import logger
 
+from src.database.connection import engine
+from src.database.models import Base  # noqa: F401  (imports register all models)
+
 
 def init_database():
-    """Run Alembic migrations to create all tables."""
-    logger.info("Running Alembic migrations...")
-    result = subprocess.run(
-        ["alembic", "upgrade", "head"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        logger.error(f"Migration failed: {result.stderr}")
-        sys.exit(1)
-    logger.info("Database initialized successfully.")
-    logger.info(result.stdout)
+    logger.info(f"Creating schema on {engine.url} ...")
+    Base.metadata.create_all(bind=engine)
+    tables = sorted(Base.metadata.tables.keys())
+    logger.info(f"Schema ready. Tables: {tables}")
 
 
 if __name__ == "__main__":

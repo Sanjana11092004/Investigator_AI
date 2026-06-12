@@ -1,7 +1,7 @@
 """
 Medical Narrative PDF Ingestor.
-Extracts text from PDFs, chunks them, embeds, and stores in ChromaDB.
-Also runs entity extraction and stores in PostgreSQL.
+Extracts text from PDFs, chunks them, and indexes them in the SQLite FTS catalog.
+Also runs LLM structured extraction into the per-document JSON store.
 """
 import os
 from pathlib import Path
@@ -18,15 +18,14 @@ from src.ingestion.deduplication import (
     register_document,
 )
 from src.embeddings.chunker import chunk_text
-from src.embeddings.embedder import get_embedder
-from src.vector_store.chroma_store import get_vector_store
+from src.catalog.catalog_store import get_catalog_store
 from src.config.settings import settings
 
 
 class PDFIngestor(BaseIngestor):
     """
-    Ingests medical narrative PDF files into ChromaDB vector store.
-    Performs text extraction, chunking, embedding, and indexing.
+    Ingests medical narrative PDF files into the SQLite FTS catalog.
+    Performs text extraction, chunking, and full-text indexing (no embeddings).
     """
 
     def can_handle(self, file_path: str) -> bool:
@@ -53,42 +52,32 @@ class PDFIngestor(BaseIngestor):
         # Tag chunks with the uploading session for per-session scoping; bundled /
         # bulk-ingested documents (no session) are 'global' and visible to all.
         session_id = kwargs.get("session_id") or "global"
-        all_chunks = []
-        all_metadatas = []
-        all_ids = []
+        rows = []
+        global_index = 0  # monotonic chunk index across the whole document
 
         for page_num, page_text in enumerate(text_pages, start=1):
             if not page_text.strip():
                 continue
-            chunks = chunk_text(page_text)
-            for chunk_idx, chunk in enumerate(chunks):
-                chunk_id = f"{file_hash}_{page_num}_{chunk_idx}"
-                all_chunks.append(chunk)
-                all_metadatas.append({
+            for chunk in chunk_text(page_text):
+                rows.append({
+                    "chunk_id": f"{file_hash}_{page_num}_{global_index}",
+                    "content": chunk,
                     "source": file_name,
-                    "file_hash": file_hash,
                     "page": page_num,
-                    "chunk_index": chunk_idx,
-                    "doc_type": "narrative_pdf",
                     "session_id": session_id,
+                    "doc_type": "narrative_pdf",
+                    "chunk_index": global_index,
+                    "file_hash": file_hash,
                 })
-                all_ids.append(chunk_id)
+                global_index += 1
 
-        if not all_chunks:
+        if not rows:
             logger.warning(f"No text extracted from {file_name}")
             return {"success": False, "records": 0, "message": "No text extracted"}
 
-        # Store in ChromaDB
-        vector_store = get_vector_store()
-        embedder = get_embedder()
-        embeddings = embedder.embed_documents(all_chunks)
-
-        vector_store.add(
-            documents=all_chunks,
-            embeddings=embeddings,
-            metadatas=all_metadatas,
-            ids=all_ids,
-        )
+        # Index into the SQLite FTS catalog (no embeddings / vector store).
+        get_catalog_store().add_chunks(rows)
+        all_chunks = rows  # for the record count below
 
         register_document(
             self.db,

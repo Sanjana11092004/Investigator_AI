@@ -19,7 +19,7 @@ from src.database.connection import SessionLocal
 from src.database.models.document import IngestedDocument
 from src.ingestion.deduplication import compute_file_hash
 from src.ingestion.pdf_ingestor import PDFIngestor
-from src.vector_store.chroma_store import get_vector_store
+from src.catalog.catalog_store import get_catalog_store
 
 
 def main(path: str) -> None:
@@ -27,8 +27,8 @@ def main(path: str) -> None:
     file_hash = compute_file_hash(path)
     db = SessionLocal()
     try:
-        # 1. Drop existing vector chunks for this source.
-        get_vector_store().delete_by_source(file_name)
+        # 1. Drop existing catalog chunks for this source.
+        get_catalog_store().delete_by_source(file_name)
 
         # 2. Drop the ingestion record so the ingestor doesn't skip it.
         deleted = (

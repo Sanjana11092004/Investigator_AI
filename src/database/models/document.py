@@ -6,9 +6,8 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import Column, String, DateTime, Text, Integer
-from sqlalchemy.dialects.postgresql import UUID
 
-from src.database.models.base import Base
+from src.database.models.base import Base, GUID
 
 
 class IngestedDocument(Base):
@@ -19,7 +18,7 @@ class IngestedDocument(Base):
     """
     __tablename__ = "ingested_documents"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
     file_name = Column(String(512), nullable=False)
     file_path = Column(Text, nullable=False)
     file_hash = Column(String(64), unique=True, nullable=False, index=True)
